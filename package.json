@@ -1,0 +1,17 @@
+{
+  "name": "replayright",
+  "author": "Utkarsh Dhiman",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Record a browser flow once, mark its loops, replay it every day",
+  "scripts": {
+    "record": "node src/cli.js record",
+    "play": "node src/cli.js play",
+    "verify": "node src/cli.js verify",
+    "emit": "node src/cli.js emit",
+    "list": "node src/cli.js list"
+  },
+  "dependencies": {
+    "playwright": "^1.62.1"
+  }
+}
