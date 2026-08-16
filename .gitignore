@@ -151,3 +151,4 @@ dist
 sites/*
 !sites/_template
 
+git-pointer.txt
