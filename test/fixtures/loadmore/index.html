@@ -1,0 +1,38 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><style>#results{padding:24px;list-style:none;margin:0} li.card{padding:8px;margin:4px 0;border:1px solid #ddd}</style>
+  <title>Jobs - load more appends in place</title></head>
+<body>
+  <h1>Open roles</h1>
+  <!-- No navigation happens here at all - "Load More" appends more <li> to the SAME
+       list, same document. Stands in for a real "Load More" pagination control,
+       distinct from the paged/ fixture's real next-page navigation. -->
+  <ul id="results">
+    <li class="card"><a class="card-link" href="#j1">Frontend Engineer</a><span class="loc">Bangalore</span></li>
+    <li class="card"><a class="card-link" href="#j2">Backend Engineer</a><span class="loc">Pune</span></li>
+    <li class="card"><a class="card-link" href="#j3">Data Engineer</a><span class="loc">Chennai</span></li>
+  </ul>
+  <button id="load-more">Load More</button>
+  <script>
+    const batches = [
+      ['Platform Engineer|Hyderabad|j4', 'QA Engineer|Delhi|j5', 'DevOps Engineer|Mumbai|j6'],
+      ['Mobile Engineer|Kolkata|j7', 'Security Engineer|Noida|j8', 'Data Scientist|Gurugram|j9'],
+    ];
+    const list = document.getElementById('results');
+    const btn = document.getElementById('load-more');
+    btn.addEventListener('click', () => {
+      const batch = batches.shift();
+      if (batch) {
+        for (const row of batch) {
+          const [title, loc, id] = row.split('|');
+          const li = document.createElement('li');
+          li.className = 'card';
+          li.innerHTML = `<a class="card-link" href="#${id}">${title}</a><span class="loc">${loc}</span>`;
+          list.appendChild(li);
+        }
+      }
+      if (!batches.length) { btn.disabled = true; }
+    });
+  </script>
+</body>
+</html>

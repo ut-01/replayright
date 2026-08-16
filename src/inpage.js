@@ -143,7 +143,19 @@ function installOverlay(config) {
       const parts = [];
       let node = el;
       let depth = 0;
-      while (node && node !== root && node.parentElement && depth < 10) {
+      // A full-text description block is often 15-30 levels below <html> on a
+      // framework-heavy careers site (layout wrappers, CSS-in-JS component divs) -
+      // deeper than a job card's own title/location ever need to be. 10 was tuned for
+      // the latter and silently failed the former, so this is generous on purpose.
+      while (node && node !== root && node.parentElement && depth < 40) {
+        // An id on an ANCESTOR (not el itself - that's the dedicated self-candidate
+        // below) anchors the whole path: what is between it and el is already in
+        // `parts`, so the climb can stop right here instead of needing to reach
+        // `root` at all. Without this, a singleton element with an id but no
+        // distinguishing classes (a modal/portal container, commonly) had no way to
+        // be named other than "nth div under body", which real pages rarely make
+        // unique.
+        if (node !== el && node.id) { parts.unshift(node.tagName.toLowerCase() + '#' + esc(node.id)); return parts.join(' > '); }
         let part = node.tagName.toLowerCase();
         if (useClasses) {
           const cls = Array.from(node.classList).filter((c) => !HASH_LIKE.test(c));
@@ -166,6 +178,10 @@ function installOverlay(config) {
     // Uniqueness is enforced by `push`, so a too-loose one is rejected rather than
     // chosen - which makes "minimal unique" both safe and the most durable option.
     const tag = el.tagName.toLowerCase();
+    // An id, if el has one, is tried first - more robust than any class list, and
+    // exactly what a singleton element (a modal, a "show more" panel) usually has
+    // instead of a distinguishing class.
+    if (el.id) push(tag + '#' + esc(el.id));
     const classes = Array.from(el.classList).filter((c) => !HASH_LIKE.test(c));
     for (let i = 0; i <= classes.length; i += 1) push(withClasses(el.tagName, classes.slice(0, i)));
     for (const attr of ['data-testid', 'data-test-id', 'data-test']) {

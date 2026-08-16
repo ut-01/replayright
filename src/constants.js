@@ -12,8 +12,19 @@
 // removal from the replayable body.
 const MARKER_PREFIX = 'playright:';
 
+// Every launch (record's persistent profile, and the fresh ephemeral ones verify/play
+// use) gets these. The persistent one is the case that actually matters: reusing a
+// profile dir across runs means Chromium never sees a clean "exit_type" written by the
+// previous run (closing the window, Ctrl-C, killing the process all skip it), so it
+// offers to restore pages on every single launch - '--disable-session-crashed-bubble'
+// silences exactly that, and '--no-default-browser-check' skips the other one-time
+// nag dialog that would otherwise also need a click. Neither affects recording or
+// replay behaviour.
+const CHROMIUM_ARGS = ['--no-default-browser-check', '--disable-session-crashed-bubble'];
+
 module.exports = {
   MARKER_PREFIX,
+  CHROMIUM_ARGS,
 
   // Default iteration count for an "R" (repeat) block, and its hard cap. A repeat
   // block's real early exit is `untilGone` (stop once the control its body clicks
@@ -43,4 +54,9 @@ module.exports = {
   // How long to wait for a `settle` condition (e.g. "the content under this selector
   // must change before the next repeat iteration") before warning and carrying on.
   SETTLE_TIMEOUT_MS: 10000,
+
+  // How long the "curl equivalent" plain-HTTP probe (src/headless-probe.js) waits for a
+  // response before treating the site as bot-protected. Kept well under a typical CI/cron
+  // job's own timeout, since this runs once per record/verify, not per item.
+  HEADLESS_PROBE_TIMEOUT_MS: 10000,
 };

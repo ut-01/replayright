@@ -78,6 +78,17 @@ async function safeText(page, selector) {
   }
 }
 
+// Same as safeText, but against an already-resolved locator rather than a fresh
+// selector lookup - used to fingerprint "is this the same first item as last round"
+// without a second round of candidate resolution.
+async function safeLocatorText(locator) {
+  try {
+    return (await locator.innerText()).trim();
+  } catch {
+    return null;
+  }
+}
+
 // Generic, site-agnostic settle condition: "the content under this selector must
 // differ from what it was before the last iteration". Locator auto-waiting handles
 // most timing, but an SPA that swaps its list in place after a "Next Page" click
@@ -255,8 +266,15 @@ async function runRepeat(step, ctx) {
   // left to click", which is the normal way a paginated flow ends.
   const repeatExit = step.untilGone ? { selector: step.untilGone, done: false } : null;
 
+  // Shared by reference across every iteration of THIS repeat (created once, here,
+  // not per-iteration) so a nested foreach can tell "the advance control appended to
+  // the same list" (a "Load More" button) from "the advance control replaced it with
+  // a new page" (real pagination) - see runForeach. Keyed by the foreach step object
+  // itself, so a repeat with more than one foreach in its body tracks each separately.
+  const foreachProgress = new Map();
+
   for (let i = 0; i < times; i += 1) {
-    const iterCtx = { ...ctx, path: `${ctx.path}repeat[${i}]/`, repeatExit };
+    const iterCtx = { ...ctx, path: `${ctx.path}repeat[${i}]/`, repeatExit, foreachProgress };
     const before = settleSelector ? await safeText(ctx.page, settleSelector) : null;
 
     try {
@@ -319,7 +337,30 @@ async function runForeach(step, ctx) {
 
   logInfo(`${ctx.path}foreach: ${total} item(s) via ${JSON.stringify(first.selector)}`);
 
-  for (let i = 0; i < total; i += 1) {
+  // A "Load More" advance control appends to the SAME list rather than replacing it
+  // with a new page - without this, every repeat iteration would re-walk the items
+  // already visited on top of whatever just got appended. Detected by comparing this
+  // iteration's first item against the one recorded at the end of the previous
+  // iteration: still the same item, just a longer list, means "resume after what we
+  // already did"; a different (or missing) first item means a real next-page
+  // navigation replaced the list, so start over from 0 exactly as before. Only
+  // possible when nested inside a repeat at all - `ctx.foreachProgress` is threaded
+  // in by runRepeat and absent for a bare, top-level foreach.
+  const progress = ctx.foreachProgress;
+  const firstItemText = progress ? await safeLocatorText(first.locator.nth(0)) : null;
+  let startIndex = 0;
+  if (progress) {
+    const prev = progress.get(step);
+    if (prev && total >= prev.count && firstItemText !== null && firstItemText === prev.firstItemText) {
+      startIndex = prev.count;
+    }
+  }
+
+  if (startIndex >= total) {
+    logInfo(`${ctx.path}foreach: no new items since last time (still ${total}) - nothing to do this round`);
+  }
+
+  for (let i = startIndex; i < total; i += 1) {
     const iterCtx = { ...ctx, path: `${ctx.path}foreach[${i}]/` };
 
     let items;
@@ -361,6 +402,8 @@ async function runForeach(step, ctx) {
       }
     }
   }
+
+  if (progress) progress.set(step, { count: total, firstItemText });
 }
 
 function recordStepError(ctx, err) {

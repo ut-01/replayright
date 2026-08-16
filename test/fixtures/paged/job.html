@@ -1,0 +1,26 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Job detail</title></head>
+<body>
+  <h1 id="job-title">Job detail</h1>
+  <div id="summary">Summary section</div>
+  <div id="description" hidden>The full description text.</div>
+
+  <button id="show-desc" aria-label="Show description">Show description</button>
+  <button id="back" aria-label="Back to results">Back to results</button>
+
+  <script>
+    // Which job we came from, so a test can prove every distinct card was visited.
+    const id = new URLSearchParams(location.search).get('j') || 'unknown';
+    document.getElementById('job-title').textContent = 'Job detail: ' + id;
+    document.title = 'Job ' + id;
+
+    document.getElementById('show-desc').addEventListener('click', () => {
+      document.getElementById('description').hidden = false;
+    });
+    // A real back navigation, so the interpreter's "did the URL change" logic and the
+    // list-reset detection both get exercised.
+    document.getElementById('back').addEventListener('click', () => history.back());
+  </script>
+</body>
+</html>

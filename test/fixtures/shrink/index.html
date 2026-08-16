@@ -1,0 +1,23 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Jobs - list shrinks as you act</title></head>
+<body>
+  <h1>Open roles</h1>
+  <!-- Acting on a card REMOVES it, so the live item set shrinks under the loop.
+       Stands in for the real-world hazard: a body that navigates away and comes
+       back to a list that has been reset or re-rendered shorter. -->
+  <ul id="results">
+    <li class="card"><button class="act" aria-label="Dismiss">Dismiss</button></li>
+    <li class="card"><button class="act" aria-label="Dismiss">Dismiss</button></li>
+    <li class="card"><button class="act" aria-label="Dismiss">Dismiss</button></li>
+    <li class="card"><button class="act" aria-label="Dismiss">Dismiss</button></li>
+    <li class="card"><button class="act" aria-label="Dismiss">Dismiss</button></li>
+  </ul>
+  <script>
+    document.getElementById('results').addEventListener('click', (e) => {
+      const btn = e.target.closest('.act');
+      if (btn) btn.closest('.card').remove();
+    });
+  </script>
+</body>
+</html>

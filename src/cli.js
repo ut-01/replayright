@@ -10,7 +10,9 @@ const { verifyFlow } = require('./verify');
 const { runFlow } = require('./interpret');
 const { emitFlow } = require('./emit');
 const drift = require('./drift');
+const { probeRequiresHeaded } = require('./headless-probe');
 const { logInfo, logWarn, logError } = require('./log');
+const { CHROMIUM_ARGS } = require('./constants');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const SITES_DIR = path.join(REPO_ROOT, 'sites');
@@ -31,7 +33,16 @@ Usage: node src/cli.js <command> [options]
   list                           List recorded sites.
 
 Options:
-  --headless[=true|false]        Default: false for record/verify, true for play.
+  --headless[=true|false]        Default: false for record/verify; for play, true unless
+                                 the flow was auto-detected (or --requires-headed) as
+                                 needing headed mode.
+  --requires-headed[=true|false] record/verify only. Skip the automatic "does this site
+                                 block a plain HTTP request" probe and set flow.json's
+                                 requiresHeaded directly.
+  --clear-tracking               record only. Wipe cookies/storage from the profile dir
+                                 before and after recording, so the session starts and
+                                 ends logged-out. Off by default - the profile persists
+                                 so cookie banners and logins survive between sessions.
   --times <n>                    Override every repeat block's iteration count.
 `);
 }
@@ -55,7 +66,7 @@ function overrideTimes(steps, times) {
 }
 
 async function withPage(headless, fn) {
-  const browser = await chromium.launch({ headless });
+  const browser = await chromium.launch({ headless, args: CHROMIUM_ARGS });
   try {
     const context = await browser.newContext();
     return await fn(await context.newPage());
@@ -64,12 +75,29 @@ async function withPage(headless, fn) {
   }
 }
 
+// Sets flow.requiresHeaded, either from an explicit --requires-headed override or from the
+// "curl equivalent" probe (see headless-probe.js). Shared by record and verify - both
+// re-check on every run rather than diagnosing once and trusting it forever, since a site's
+// bot-protection posture can change over time just as its selectors can.
+async function resolveRequiresHeaded(flow, args) {
+  if (args.requiresHeaded !== undefined) {
+    flow.requiresHeaded = args.requiresHeaded;
+    logInfo(`requiresHeaded set explicitly via --requires-headed=${args.requiresHeaded}`);
+    return;
+  }
+  const probe = await probeRequiresHeaded(flow.startUrl);
+  flow.requiresHeaded = probe.requiresHeaded;
+  logInfo(`headless capability: ${probe.reason} -> requiresHeaded=${probe.requiresHeaded}`);
+}
+
 async function cmdRecord(args) {
   if (!args.id || !args.url) throw new Error('record needs --id <id> and --url <url>');
 
-  const { flow, paths } = await recordSite({ siteId: args.id, url: args.url });
+  const { flow, paths } = await recordSite({ siteId: args.id, url: args.url, clearTracking: args.clearTracking });
   if (!flow.steps.length) process.exitCode = 1;
   if (!flow.steps.length) return;
+
+  await resolveRequiresHeaded(flow, args);
 
   logInfo('');
   logInfo('Replaying the recording now to check it actually works...');
@@ -93,6 +121,12 @@ async function cmdRecord(args) {
 
 async function cmdVerify(args) {
   const flow = loadFlow(args.id);
+
+  // Resolved and persisted BEFORE any `--times` override below - that override is a
+  // one-off smoke-run convenience and must never leak into the saved flow.json.
+  await resolveRequiresHeaded(flow, args);
+  fs.writeFileSync(sitePaths(args.id).flow, JSON.stringify(flow, null, 2));
+
   if (args.times) overrideTimes(flow.steps, args.times);
   const { ok } = await verifyFlow(flow, {
     headless: args.headless ?? false,
@@ -108,7 +142,10 @@ async function cmdPlay(args) {
 
   const paths = sitePaths(args.id);
 
-  const { stats, fingerprint } = await withPage(args.headless ?? true, async (page) => {
+  // `--headless` on the CLI still wins when passed explicitly; otherwise default to
+  // headless UNLESS this site was auto-detected (or --requires-headed'd, at record/verify
+  // time) as needing headed mode - see headless-probe.js.
+  const { stats, fingerprint } = await withPage(args.headless ?? !flow.requiresHeaded, async (page) => {
     const runStats = await runFlow(flow, { page, artifactsDir: paths.failures });
     // Captured while the browser is still open and sitting on the final page.
     return { stats: runStats, fingerprint: await drift.captureFingerprint(page, flow, runStats) };
@@ -160,7 +197,8 @@ function cmdList() {
   for (const entry of entries) {
     try {
       const flow = JSON.parse(fs.readFileSync(path.join(SITES_DIR, entry.name, 'flow.json'), 'utf8'));
-      console.log(`${entry.name}\t${flow.verified ? 'verified' : 'UNVERIFIED'}\t${countSteps(flow.steps)} steps\t${flow.startUrl}`);
+      const headedness = flow.requiresHeaded ? 'headed' : 'headless';
+      console.log(`${entry.name}\t${flow.verified ? 'verified' : 'UNVERIFIED'}\t${headedness}\t${countSteps(flow.steps)} steps\t${flow.startUrl}`);
     } catch (err) {
       console.log(`${entry.name}\t(unreadable flow.json: ${err.message})`);
     }
@@ -177,6 +215,8 @@ async function main() {
       id: { type: 'string' },
       url: { type: 'string' },
       headless: { type: 'string' },
+      'requires-headed': { type: 'string' },
+      'clear-tracking': { type: 'boolean' },
       times: { type: 'string' },
       help: { type: 'boolean' },
     },
@@ -192,6 +232,10 @@ async function main() {
     // `--headless` alone means true; `--headless=false` means false; absent means "let
     // the command decide". Bare `--headless false` also works via parseArgs.
     headless: values.headless === undefined ? undefined : values.headless !== 'false',
+    // Same shape as `headless` - explicit override, skipping the automatic probe entirely
+    // when set (record/verify only; play/emit/list ignore it).
+    requiresHeaded: values['requires-headed'] === undefined ? undefined : values['requires-headed'] !== 'false',
+    clearTracking: values['clear-tracking'] ?? false,
     times: values.times ? Number(values.times) : undefined,
   };
   if (command !== 'list' && !args.id) throw new Error(`${command} needs --id <id>`);

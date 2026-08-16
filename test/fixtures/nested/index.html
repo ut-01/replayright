@@ -1,0 +1,91 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Jobs - decoy repeating levels</title>
+  <style>
+    #search-results { padding: 28px; }
+    ul.rc-accordion { list-style: none; margin: 0; padding: 0; }
+    li.rc-accordion-item { border: 1px solid #ddd; margin: 4px 0; }
+    .row { display: flex; gap: 12px; padding: 6px; }
+    .col { flex: 1; }
+  </style>
+</head>
+<body>
+  <h1>Find your perfect role.</h1>
+
+  <!-- Reproduces the structure of a real careers listing, where several DOM levels
+       "repeat" and only one of them is the job row:
+
+         div.col.job-title-link    4 siblings (the columns)   20 in the container
+         div.rc-accordion-button   2 siblings (button/panel)  20 in the container
+         li.rc-accordion-item     20 siblings                 20 in the container  <-- correct
+         section                   2 siblings                  2 in the container
+
+       Picking the outermost child of the container gives `section` (2 items, and a
+       relative selector that matches 20 links inside each). Picking the innermost
+       repeating level gives the title column. Only "occurs as often as the thing that
+       was clicked, then outermost" gives the job row. -->
+  <div id="search-results">
+    <section class="summary-section">
+      <p>20 results</p>
+    </section>
+
+    <section class="results-section">
+      <ul class="rc-accordion rc-accordion-compact"></ul>
+    </section>
+  </div>
+
+  <!-- Sits OUTSIDE every li.rc-accordion-item on purpose: reproduces a real careers
+       site's "show full description" modal/side-panel, which frameworks commonly
+       portal to a spot elsewhere in the DOM rather than nesting inside the card that
+       opened it. A field pick landing in here cannot use an item-relative selector. -->
+  <div id="portal-description" hidden></div>
+
+  <script>
+    const TITLES = [
+      'Frontend Engineer', 'Backend Engineer', 'Data Engineer', 'Platform Engineer',
+      'QA Engineer', 'Site Reliability Engineer', 'Security Engineer', 'Mobile Engineer',
+      'Machine Learning Engineer', 'Support Engineer', 'Engineering Manager',
+      'Technical Writer', 'Solutions Architect', 'Developer Advocate', 'Product Engineer',
+      'Network Engineer', 'Database Engineer', 'Release Engineer', 'Build Engineer',
+      'Systems Engineer',
+    ];
+    const CITIES = ['Bangalore', 'Pune', 'Chennai', 'Hyderabad', 'Delhi'];
+    const list = document.querySelector('ul.rc-accordion');
+
+    TITLES.forEach((title, i) => {
+      const li = document.createElement('li');
+      li.className = 'rc-accordion-item';
+      li.innerHTML = `
+        <div class="rc-accordion-button">
+          <div class="row job-title job-list-item">
+            <div class="col job-title-link"><h3><a class="link-inline t-intro" href="#job-${i + 1}">${title}</a></h3></div>
+            <div class="col job-location"><span>${CITIES[i % CITIES.length]}</span></div>
+            <div class="col job-date"><span>2026-08-01</span></div>
+            <div class="col job-team"><span>Software</span></div>
+          </div>
+        </div>
+        <div class="rc-accordion-panel" hidden><p>Description ${i + 1}</p></div>`;
+      list.appendChild(li);
+    });
+
+    // Clicking a job link reveals that row's panel in place - so a wrong item selector
+    // shows up as the wrong panel opening, not just as a thrown selector error.
+    list.addEventListener('click', (e) => {
+      const link = e.target.closest('a.link-inline');
+      if (!link) return;
+      e.preventDefault();
+      const item = link.closest('li.rc-accordion-item');
+      item.querySelector('.rc-accordion-panel').hidden = false;
+
+      // The portal: same content, but rendered into the shared out-of-tree div
+      // rather than inside `item` - whichever job was clicked most recently "wins",
+      // exactly like a real single-instance modal/panel would.
+      const portal = document.getElementById('portal-description');
+      portal.textContent = item.querySelector('.rc-accordion-panel p').textContent;
+      portal.hidden = false;
+    });
+  </script>
+</body>
+</html>

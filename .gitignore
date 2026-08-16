@@ -150,5 +150,4 @@ dist
 # everything else here is regenerated or forensic.
 sites/*
 !sites/_template
-
-git-pointer.txt
+commit-slot.cfg

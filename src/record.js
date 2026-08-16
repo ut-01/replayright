@@ -24,8 +24,9 @@ const { chromium } = require('playwright');
 const { installOverlay } = require('./inpage');
 const { buildFlow } = require('./ir');
 const { isOverlayAction, parseMarker } = require('./generalize');
-const { MARKER_PREFIX } = require('./constants');
+const { MARKER_PREFIX, CHROMIUM_ARGS } = require('./constants');
 const { logInfo, logWarn, logError } = require('./log');
+const { clearTrackingData } = require('./profile');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 
@@ -102,7 +103,12 @@ function countSteps(steps) {
 // waiting for a person to close the browser, so the whole record -> flow.json -> verify
 // loop can be exercised headlessly against a local fixture. Recording a browser session
 // is otherwise the one part of this system that cannot be tested.
-async function recordSite({ siteId, url, drive = null, headless = false, userDataDir, viewport }) {
+// `clearTracking` is OFF by default: the stable profile dir this function already uses
+// is what lets cookie banners and login state persist across recording sessions instead
+// of being re-fought every time, and a flow that depends on being logged in would break
+// if that state were wiped on every run. Turn it on only for a site where you deliberately
+// want every recording to start logged-out and cookie-free (see profile.js).
+async function recordSite({ siteId, url, drive = null, headless = false, userDataDir, viewport, clearTracking = false }) {
   // `npx playwright codegen` has no flag to inject our own overlay, and the eventSink we
   // need is only wired up when the recorder runs in api mode - which the CLI never does.
   // So we drive the recorder ourselves.
@@ -122,12 +128,15 @@ async function recordSite({ siteId, url, drive = null, headless = false, userDat
   fs.mkdirSync(paths.dir, { recursive: true });
 
   // A stable profile dir per site, so cookie banners and consent dismissals survive
-  // between recording sessions instead of being re-fought every time.
+  // between recording sessions instead of being re-fought every time - unless
+  // `clearTracking` opts into wiping it (see the doc comment above and profile.js).
   const profileDir = userDataDir || path.join(os.tmpdir(), `playright-profile-${siteId}`);
+  if (clearTracking) clearTrackingData(profileDir);
 
   const context = await chromium.launchPersistentContext(profileDir, {
     headless,
     viewport: viewport ?? null,
+    args: CHROMIUM_ARGS,
   });
 
   const actionLog = [];
@@ -236,6 +245,11 @@ async function recordSite({ siteId, url, drive = null, headless = false, userDat
   await closed;
   process.removeListener('SIGINT', onSigint);
   await Promise.allSettled(pending);
+
+  // Belt and braces: wipe again on the way out, so nothing this session accumulated
+  // (a cookie set on the very first page load, before we could have cleared it) is
+  // still sitting on disk waiting for the NEXT run to inherit it either.
+  if (clearTracking) clearTrackingData(profileDir);
 
   const { flow, warnings } = buildFlow({ siteId, url, actionLog, overlayEvents });
 
