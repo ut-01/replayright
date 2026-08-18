@@ -1,0 +1,36 @@
+<!--
+  overlay.html - markup template for the recording overlay's shadow DOM content.
+
+  Just the toolbar chrome: a persistent open-block strip and a row of two marker
+  buttons, icon + letter caption each. No inline styles (overlay.css owns all of
+  that) and no aria-label baked in here - overlay.js sets it at mount time and
+  again on every state change, since the label IS the marker meaning Playwright's
+  own selector generator reads back out of the recorded action (see CLAUDE.md).
+
+  The floating toast, the cursor-following pick label and the hover-badge are NOT
+  in this template - they live in the page's light DOM, built directly by
+  overlay.js, because the :host rule in overlay.css positions this shadow host
+  with a `transform`, and a transformed ancestor becomes the containing block for
+  any `position: fixed` descendant. A toast rendered in here would be pinned to
+  this little toolbar box instead of the viewport corner it's meant to float in.
+
+  data-pr="..." hooks are how overlay.js finds these nodes after cloning this
+  template into the shadow root; nothing here is ever queried by tag or class
+  alone.
+
+  Icons are plain Unicode placeholders (Phase 2.2) - swap for real icon files in
+  Phase 3 without touching this structure. The R/F letter captions stay: they're
+  what the docs, the CLI hints and muscle memory all refer to, so icon-only would
+  cost more than it gains.
+-->
+<div class="pr-open-strip" data-pr="open-strip" hidden></div>
+<div class="pr-row" data-pr="row">
+  <button type="button" class="pr-btn pr-btn--r" data-pr="r-btn">
+    <span class="pr-btn-icon" aria-hidden="true">&#10227;</span>
+    <span class="pr-btn-label">R</span>
+  </button>
+  <button type="button" class="pr-btn pr-btn--f" data-pr="f-btn">
+    <span class="pr-btn-icon" aria-hidden="true">&#9638;</span>
+    <span class="pr-btn-label">F</span>
+  </button>
+</div>

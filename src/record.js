@@ -21,7 +21,7 @@ const os = require('os');
 const path = require('path');
 const { chromium } = require('playwright');
 
-const { installOverlay } = require('./inpage');
+const { buildOverlayScript } = require('./ui-bundle');
 const { buildFlow } = require('./ir');
 const { isOverlayAction, parseMarker } = require('./generalize');
 const { MARKER_PREFIX, CHROMIUM_ARGS } = require('./constants');
@@ -148,7 +148,7 @@ async function recordSite({ siteId, url, drive = null, headless = false, userDat
     if (payload && typeof payload === 'object') overlayEvents.push(payload);
   });
 
-  await context.addInitScript(installOverlay, { markerPrefix: MARKER_PREFIX });
+  await context.addInitScript({ content: buildOverlayScript({ markerPrefix: MARKER_PREFIX }) });
 
   // launchPersistentContext() already opened a page before we could listen for the
   // 'page' event, so that first page's close would otherwise go unnoticed and the

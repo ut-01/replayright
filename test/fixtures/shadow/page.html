@@ -1,0 +1,46 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>shadow marker spike</title>
+<style>
+  body { font: 14px/1.5 -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif; padding: 24px; }
+  /* Deliberately hostile site CSS: the exact bleed a shadow root is supposed to stop.
+     If the overlay were in the light DOM these rules would repaint it. */
+  button { background: #0a0; color: #fff; border: 3px dashed #f0f; font-size: 22px; }
+</style>
+
+<h1>Shadow marker spike</h1>
+<button id="thing">Do a thing</button>
+
+<!-- The host for the simulated Phase 2 overlay. -->
+<div id="pr-host"></div>
+
+<script>
+  // Phase 2.0 spike fixture.
+  //
+  // This mounts ONE marker button the way src/ui/ wants to mount the whole overlay in
+  // Phase 2.1: inside an OPEN shadow root, so overlay.css can be a real stylesheet
+  // without the site's own rules (see <style> above) bleeding into it.
+  //
+  // The aria-label is spelled out literally rather than derived from
+  // src/constants.js#MARKER_PREFIX because this is static HTML the browser loads
+  // directly. The test asserts the two stay in sync.
+  var shadow = document.getElementById('pr-host').attachShadow({ mode: 'open' });
+
+  var style = document.createElement('style');
+  style.textContent = ':host{position:fixed;right:12px;top:50%;transform:translateY(-50%);z-index:2147483646}'
+    + 'button{width:36px;height:36px;border-radius:50%;border:2px solid #222;background:#fff;color:#222;'
+    + 'font:700 13px/1 sans-serif;cursor:pointer}';
+
+  var btn = document.createElement('button');
+  btn.setAttribute('aria-label', 'playright:R:start');
+  btn.textContent = 'R';
+
+  // Mirrors the real overlay: one button that relabels itself, so R:start and R:end are
+  // two presses of the same element rather than two elements.
+  btn.addEventListener('click', function () {
+    var opening = btn.getAttribute('aria-label') === 'playright:R:start';
+    btn.setAttribute('aria-label', opening ? 'playright:R:end' : 'playright:R:start');
+  });
+
+  shadow.append(style, btn);
+</script>

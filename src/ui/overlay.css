@@ -1,0 +1,169 @@
+/*
+  overlay.css - all styling for the recording overlay's toolbar chrome (the R/F
+  buttons and the open-block strip).
+
+  Injected as a <style> element inside the overlay's own open shadow root (see
+  overlay.js), so none of this can bleed into the recorded page and - the reason for
+  the shadow root in the first place - none of the page's own CSS can bleed into it
+  either (confirmed safe for the marker mechanism by the Phase 2.0 spike,
+  test/shadow-marker.test.js).
+
+  `:host` styles the shadow HOST element itself (the div#playright-overlay in the
+  page's light DOM) from inside the shadow root - the one place shadow CSS is allowed
+  to reach outside its own tree.
+
+  The floating toast, the cursor-following pick label and the hover-badge live
+  OUTSIDE this shadow root entirely (built and styled from overlay.js, appended to
+  document.documentElement) - see the comment above ensureChromeStyle() there for
+  why. This file only ever covers the toolbar itself.
+*/
+
+/*
+  Design tokens, deliberately scoped to :host rather than :root. This stylesheet is
+  only ever parsed inside the overlay's shadow root - `:root` is tree-scoped in CSS
+  and matches the real document's <html> element, which sits OUTSIDE this shadow
+  tree, so a `:root` rule in here would silently match nothing and every
+  var(--pr-*) below would resolve to nothing. `:host` is shadow DOM's equivalent: it
+  selects the shadow host itself, so custom properties declared here inherit down
+  through everything this shadow root renders - exactly the role `:root` plays in a
+  normal document.
+*/
+:host {
+  --pr-bg: #ffffff;
+  --pr-fg: #000000;
+  --pr-muted: rgba(0, 0, 0, .55);
+  --pr-accent-r: #ff3366;
+  --pr-accent-r-tint: rgba(255, 51, 102, .12);
+  --pr-accent-f: #007aff;
+  --pr-accent-f-tint: rgba(0, 122, 255, .12);
+  --pr-radius: 4px;
+  --pr-shadow: 0 2px 8px rgba(0, 0, 0, .1);
+
+  /* Stacking tiers shared by every layer this overlay mounts (see overlay.js's
+     data-playright-chrome layers - the picker reads --pr-z-picker off this element
+     via getComputedStyle, since a light-DOM layer sits outside this shadow tree and
+     cannot resolve var(--pr-z-picker) through normal CSS inheritance). Buttons stay
+     on top of everything; a future pause layer sits below the buttons but above the
+     picker; the picker sits at the bottom of the three. */
+  --pr-z-overlay: 2147483647;
+  --pr-z-pause: 2147483646;
+  --pr-z-picker: 2147483645;
+
+  position: fixed;
+  right: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: var(--pr-z-overlay);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: var(--pr-fg);
+}
+
+@media (prefers-color-scheme: dark) {
+  :host {
+    --pr-bg: #1a1a1a;
+    --pr-fg: #ffffff;
+    --pr-muted: rgba(255, 255, 255, .55);
+    --pr-shadow: 0 2px 8px rgba(0, 0, 0, .5);
+  }
+}
+
+/* --pr-accent-r / --pr-accent-f are fixed brand colours and deliberately do NOT
+   change between the two blocks above - R and F keep their identity in both
+   schemes. */
+
+/* Persistent "R open · F open" strip - answers "what's still open" without
+   opening flow.json. Sits above the button row (see overlay.html's element
+   order); hidden via the `hidden` attribute rather than display:none in CSS so
+   overlay.js can toggle it with a single property. */
+.pr-open-strip {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--pr-muted);
+  padding-right: 2px;
+}
+
+.pr-open-strip[hidden] {
+  display: none;
+}
+
+.pr-row {
+  display: flex;
+  gap: 8px;
+}
+
+.pr-btn {
+  position: relative;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 2px solid var(--pr-accent);
+  background: var(--pr-bg);
+  color: var(--pr-fg);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  padding: 0;
+  cursor: pointer;
+  box-shadow: var(--pr-shadow);
+  transition: background-color 120ms ease, color 120ms ease,
+    transform 120ms ease, box-shadow 120ms ease;
+}
+
+.pr-btn--r {
+  --pr-accent: var(--pr-accent-r);
+  --pr-accent-tint: var(--pr-accent-r-tint);
+}
+
+.pr-btn--f {
+  --pr-accent: var(--pr-accent-f);
+  --pr-accent-tint: var(--pr-accent-f-tint);
+}
+
+.pr-btn-icon {
+  font-size: 15px;
+  line-height: 1;
+}
+
+.pr-btn-label {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .02em;
+  line-height: 1;
+}
+
+.pr-btn:hover {
+  background: var(--pr-accent-tint);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 10px rgba(0, 0, 0, .16);
+}
+
+.pr-btn:active {
+  transform: translateY(0);
+  background: var(--pr-accent);
+  color: #fff;
+  box-shadow: var(--pr-shadow);
+}
+
+.pr-btn:focus-visible {
+  outline: 2px solid var(--pr-accent);
+  outline-offset: 2px;
+}
+
+/* rOpen / fOpen (armed-and-committed) state, driven from overlay.js. Kept as a
+   class rather than inline styles so :hover/:active still compose over it. */
+.pr-btn.is-active {
+  background: var(--pr-accent);
+  color: #fff;
+}
+
+.pr-btn.is-active:hover {
+  background: var(--pr-accent);
+}

@@ -63,16 +63,35 @@ because it can neither inject the overlay nor run in api mode.
    pairing against the action's own accessible name (`looksLikeSameTarget`, plus a
    3-deep lookahead so one missed observation self-heals).
 
-`src/inpage.js` is the whole in-page half: overlay chrome, the click-swallowing picker, and
-the selector construction. It is serialized to the browser via `addInitScript`, so it must
-stay **entirely self-contained** — no `require`, no closing over Node scope. It runs in the
-main world (so it can call `window.__pwEvent` directly) and re-runs on every navigation,
-which is why Node re-announces open-block state via `window.__playright.restore()`.
+The in-page half lives under `src/ui/`: `overlay.html` (markup, `data-pr-*` hooks, no inline
+styles), `overlay.css` (all styling, mounted as a real stylesheet), `overlay.js` (chrome, the
+click-swallowing picker, R/F wiring), and `selectors.js` (the pure selector-construction
+functions, `cssPath`…`chooseItem`, with no dependency on overlay chrome). `src/ui-bundle.js`
+is the Node-side seam: it reads those files and concatenates them — the two JS files, a baked
+`const __CFG__ = <JSON>` line (config can no longer arrive as a function argument once the
+script is passed as raw text), then the HTML/CSS as string literals, then a bootstrap call —
+into one `content` string, cached after the first read. `record.js` hands that string to
+`context.addInitScript({ content })`. Because it ends up as raw text evaluated in the page,
+every file under `src/ui/` must stay **entirely self-contained** — no `require`, no closing
+over Node scope. It runs in the main world (so it can call `window.__pwEvent` directly) and
+re-runs on every navigation, which is why Node re-announces open-block state via
+`window.__playright.restore()`.
+
+`overlay.js` mounts into an **open shadow root** (host `div#playright-overlay` in the light
+DOM, so `document.getElementById('playright-overlay')` still finds — and removing it still
+tears down — the whole thing). This was proven safe for the marker mechanism by the Phase 2.0
+spike (`test/shadow-marker.test.js`): Playwright's role locator pierces an open shadow root
+and the recorder still keys the generated selector off the button's accessible name, so
+`overlay.css` can be a real stylesheet with none of the recorded page's CSS bleeding in (and
+none of the overlay's leaking out). The picker layer is the one exception — it stays in the
+light DOM, appended to `document.documentElement`, because it must sit above the recorded
+page at the browser's hit-testing level regardless of which shadow tree that page's content
+lives in.
 
 The picker is a transparent full-viewport layer, not a document listener: the click must
 never reach the site, or picking a card navigates you away mid-recording.
 
-`chooseItem()` in `inpage.js` is the hardest logic in the repo. Picking the repeating unit
+`chooseItem()` in `selectors.js` is the hardest logic in the repo. Picking the repeating unit
 is *not* "outermost child of the container" nor "innermost repeating level" — it walks
 ancestors of the clicked element and prefers the **outermost** level whose match count
 equals how often the clicked thing itself occurs in the container. When nothing lines up it

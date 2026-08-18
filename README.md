@@ -63,7 +63,7 @@ the earliest word that the page beyond has changed its shape.
 | Path | What dwells there |
 |---|---|
 | `src/record.js` | the hand that drives the familiar; the three currents above |
-| `src/inpage.js` | the two sigils and the picker that swallows the click before the page ever feels it (lives inside the page itself) |
+| `src/ui/` + `src/ui-bundle.js` | the two sigils and the picker that swallows the click before the page ever feels it (lives inside the page itself, mounted in a shadow root) |
 | `src/ir.js` | gesture-stream and sigil-marks, folded through a stack of open blocks, into `flow.json` |
 | `src/interpret.js` | the one that walks `flow.json` back to life (`action` / `repeat` / `foreach`) |
 | `src/candidates.js` | the ranked search for true-names, with its warnings when it must fall back |
