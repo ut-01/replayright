@@ -112,6 +112,10 @@ function countSteps(steps) {
 async function recordSite({
   siteId, url, drive = null, headless = false, userDataDir, viewport, clearTracking = false,
   display = 'auto', screen,
+  // EXTRA Chromium args, appended to constants.js's CHROMIUM_ARGS - not a replacement.
+  // This is config.js's browser.args layer; cli.js is what actually resolves and passes
+  // it. Defaults to none, so every existing caller (all current tests) is unaffected.
+  chromiumArgs = [],
 }) {
   // `npx playwright codegen` has no flag to inject our own overlay, and the eventSink we
   // need is only wired up when the recorder runs in api mode - which the CLI never does.
@@ -146,7 +150,7 @@ async function recordSite({
 
   try {
     return await recordSession({
-      siteId, url, drive, headless, viewport, clearTracking, profileDir, paths,
+      siteId, url, drive, headless, viewport, clearTracking, profileDir, paths, chromiumArgs,
     });
   } finally {
     // Same tier as the browser-close path below, not a separate afterthought: an
@@ -155,11 +159,11 @@ async function recordSite({
   }
 }
 
-async function recordSession({ siteId, url, drive, headless, viewport, clearTracking, profileDir, paths }) {
+async function recordSession({ siteId, url, drive, headless, viewport, clearTracking, profileDir, paths, chromiumArgs = [] }) {
   const context = await chromium.launchPersistentContext(profileDir, {
     headless,
     viewport: viewport ?? null,
-    args: CHROMIUM_ARGS,
+    args: [...CHROMIUM_ARGS, ...chromiumArgs],
   });
 
   const actionLog = [];

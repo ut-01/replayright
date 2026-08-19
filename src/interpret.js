@@ -309,9 +309,13 @@ async function runExtract(step, ctx) {
 }
 
 async function runRepeat(step, ctx) {
-  const times = Math.min(step.times ?? REPEAT_DEFAULT_TIMES, HARD_LOOP_CEILING);
+  // `ctx.opts.repeatMaxTimes` is config's "you probably did not mean that many pages"
+  // guard (default 50, see config.js) - distinct from HARD_LOOP_CEILING, the runaway
+  // backstop (10000) that applies regardless of any config. Both cap the same number;
+  // HARD_LOOP_CEILING is never configurable, so it is always the outermost Math.min.
+  const times = Math.min(step.times ?? ctx.opts.repeatDefaultTimes, ctx.opts.repeatMaxTimes, HARD_LOOP_CEILING);
   const settleSelector = step.settle?.selector;
-  const settleTimeout = step.settle?.timeoutMs ?? SETTLE_TIMEOUT_MS;
+  const settleTimeout = step.settle?.timeoutMs ?? ctx.opts.settleTimeoutMs;
 
   // Shared with runAction so the loop-advance step can report "there was nothing
   // left to click", which is the normal way a paginated flow ends.
@@ -529,6 +533,12 @@ async function runFlow(flow, options = {}) {
     maxConsecutiveErrors: options.maxConsecutiveErrors ?? MAX_CONSECUTIVE_ERRORS,
     artifactsDir: options.artifactsDir ?? null,
     resolveWaitMs: options.resolveWaitMs ?? RESOLVE_WAIT_MS,
+    settleTimeoutMs: options.settleTimeoutMs ?? SETTLE_TIMEOUT_MS,
+    repeatDefaultTimes: options.repeatDefaultTimes ?? REPEAT_DEFAULT_TIMES,
+    // Not provided by a caller that doesn't know about config.js (every existing test,
+    // and any direct runFlow() call) -> HARD_LOOP_CEILING alone, exactly today's
+    // behaviour. cli.js passes config.repeat.maxTimes (default 50) here once loaded.
+    repeatMaxTimes: options.repeatMaxTimes ?? HARD_LOOP_CEILING,
   };
 
   const stats = newStats();

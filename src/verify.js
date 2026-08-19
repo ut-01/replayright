@@ -104,6 +104,11 @@ async function verifyFlow(flow, options = {}) {
     maxDelayMs: options.maxDelayMs,
     resolveWaitMs: options.resolveWaitMs,
     chromiumArgs: options.chromiumArgs,
+    // Pass-through only - undefined when the caller (e.g. existing tests) doesn't know
+    // about config.js, so runFlow's own ?? fallbacks to constants.js apply unchanged.
+    settleTimeoutMs: options.settleTimeoutMs,
+    repeatDefaultTimes: options.repeatDefaultTimes,
+    repeatMaxTimes: options.repeatMaxTimes,
   });
 
   printReport({ shapeProblems, advisories, stats });

@@ -9,12 +9,13 @@ const { recordSite, sitePaths, countSteps } = require('./record');
 const { verifyFlow } = require('./verify');
 const { runFlow } = require('./interpret');
 const { emitFlow } = require('./emit');
-const { writeOutput } = require('./output');
+const { writeOutput, toCsv, toJson } = require('./output');
 const drift = require('./drift');
 const { probeRequiresHeaded } = require('./headless-probe');
 const { logInfo, logWarn, logError } = require('./log');
 const { CHROMIUM_ARGS } = require('./constants');
 const { ensureDisplay } = require('./display');
+const { loadConfig, resolveOutputPath, resolveOutputFormat } = require('./config');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const SITES_DIR = path.join(REPO_ROOT, 'sites');
@@ -76,11 +77,43 @@ function loadFlow(siteId) {
 }
 
 // Applied recursively so a one-off `--times 2` smoke run does not need flow.json edited.
+// This stays cli.js's own post-load step rather than something config.js does: rewriting
+// every repeat block's `times` is a stronger statement than "the default for blocks that
+// name none" (config's repeat.defaultTimes), and doing it here keeps that distinction
+// visible instead of hiding a mutation inside the config loader.
 function overrideTimes(steps, times) {
   for (const step of steps || []) {
     if (step.kind === 'repeat') step.times = times;
     if (step.body) overrideTimes(step.body, times);
   }
+}
+
+// The subset of a resolved config that interpret.js's runFlow (and, via it, verifyFlow)
+// actually consumes. Pulled out once so record/verify/play ask for it the same way.
+function runFlowOptionsFrom(config) {
+  return {
+    resolveWaitMs: config.timeouts.resolveWaitMs,
+    settleTimeoutMs: config.timeouts.settleMs,
+    repeatDefaultTimes: config.repeat.defaultTimes,
+    repeatMaxTimes: config.repeat.maxTimes,
+    // browser.args is EXTRA args appended to constants.js's CHROMIUM_ARGS (see
+    // config.js) - this already carries whatever --disable-dev-shm-usage/--disable-gpu/
+    // --no-sandbox mapped to via configFromCliArgs, so cli.js has no need to rebuild
+    // that list by hand a second time.
+    chromiumArgs: config.browser.args,
+  };
+}
+
+// output.path/format come from config (defaults reproduce today's sites/<id>/output.csv,
+// extension-sniffed). writeOutput() only looks at the path's extension, so an explicit
+// output.format override (rather than 'auto') is applied by writing directly instead.
+function writeConfiguredOutput(config, siteId, records) {
+  const outPath = resolveOutputPath(config, siteId, { baseDir: REPO_ROOT });
+  const format = resolveOutputFormat(config, outPath);
+  if (!records || !records.length) return null;
+  fs.mkdirSync(path.dirname(outPath), { recursive: true });
+  fs.writeFileSync(outPath, format === 'json' ? toJson(records) : toCsv(records));
+  return outPath;
 }
 
 // A headed launch needs a real X display. On a normal desktop DISPLAY is already set
@@ -112,13 +145,13 @@ async function withPage(headless, fn, displayArgs = {}, extraArgs = []) {
 // "curl equivalent" probe (see headless-probe.js). Shared by record and verify - both
 // re-check on every run rather than diagnosing once and trusting it forever, since a site's
 // bot-protection posture can change over time just as its selectors can.
-async function resolveRequiresHeaded(flow, args) {
+async function resolveRequiresHeaded(flow, args, config) {
   if (args.requiresHeaded !== undefined) {
     flow.requiresHeaded = args.requiresHeaded;
     logInfo(`requiresHeaded set explicitly via --requires-headed=${args.requiresHeaded}`);
     return;
   }
-  const probe = await probeRequiresHeaded(flow.startUrl);
+  const probe = await probeRequiresHeaded(flow.startUrl, { timeoutMs: config?.timeouts?.probeMs });
   flow.requiresHeaded = probe.requiresHeaded;
   logInfo(`headless capability: ${probe.reason} -> requiresHeaded=${probe.requiresHeaded}`);
 }
@@ -126,29 +159,35 @@ async function resolveRequiresHeaded(flow, args) {
 async function cmdRecord(args) {
   if (!args.id || !args.url) throw new Error('record needs --id <id> and --url <url>');
 
+  // No flow exists yet, so this is defaults -> file -> env -> CLI; the flow.config layer
+  // simply has nothing to contribute for a fresh recording.
+  const config = loadConfig({ cwd: process.cwd(), cliArgs: args });
+
   // Recording is always headed - it needs a real Chromium window for the R/F buttons to
   // be clicked in - and the self-verify replay just below defaults headed too, so this
   // covers the whole command with one Xvfb instance rather than starting/stopping it
   // twice. On a normal desktop DISPLAY is already set and this is a no-op.
-  const displayHandle = await ensureDisplay({ mode: args.display, screen: args.screen });
+  const displayHandle = await ensureDisplay({ mode: config.display.mode, screen: config.display.screen });
   try {
     const { flow, paths } = await recordSite({
       siteId: args.id,
       url: args.url,
-      clearTracking: args.clearTracking,
-      display: args.display,
-      screen: args.screen,
+      clearTracking: config.profile.clearTracking,
+      display: config.display.mode,
+      screen: config.display.screen,
+      chromiumArgs: config.browser.args,
     });
     if (!flow.steps.length) process.exitCode = 1;
     if (!flow.steps.length) return;
 
-    await resolveRequiresHeaded(flow, args);
+    await resolveRequiresHeaded(flow, args, config);
 
     logInfo('');
     logInfo('Replaying the recording now to check it actually works...');
     const { ok } = await verifyFlow(flow, {
       headless: args.headless ?? false,
       artifactsDir: paths.failures,
+      ...runFlowOptionsFrom(config),
     });
 
     // `verified` is recorded in the file so `play` can warn when a flow was never proven
@@ -170,33 +209,32 @@ async function cmdRecord(args) {
 async function cmdVerify(args) {
   const flow = loadFlow(args.id);
 
+  // Loaded AFTER the flow so flow.json's own `config` key (per-site tuning a human wrote
+  // down by hand) takes part as the flow.config layer, one step under CLI flags.
+  const config = loadConfig({ cwd: process.cwd(), flow, cliArgs: args });
+
   // Resolved and persisted BEFORE any `--times` override below - that override is a
   // one-off smoke-run convenience and must never leak into the saved flow.json.
-  await resolveRequiresHeaded(flow, args);
+  await resolveRequiresHeaded(flow, args, config);
   fs.writeFileSync(sitePaths(args.id).flow, JSON.stringify(flow, null, 2));
 
   if (args.times) overrideTimes(flow.steps, args.times);
-
-  // Build extra Chromium args from server-oriented flags (opt-in).
-  const extraArgs = [];
-  if (args.disableDevShmUsage) extraArgs.push('--disable-dev-shm-usage');
-  if (args.disableGpu) extraArgs.push('--disable-gpu');
-  if (args.noSandbox) extraArgs.push('--no-sandbox');
 
   // verify defaults headed too ("replay headed + per-step report"), so it needs the
   // same Xvfb treatment as record on a headless Linux box. Skipped when explicitly run
   // headless.
   const verifyHeadless = args.headless ?? false;
-  const displayHandle = verifyHeadless ? { dispose: () => {} } : await ensureDisplay({ mode: args.display, screen: args.screen });
+  const displayHandle = verifyHeadless
+    ? { dispose: () => {} }
+    : await ensureDisplay({ mode: config.display.mode, screen: config.display.screen });
   try {
     const { ok, stats } = await verifyFlow(flow, {
       headless: verifyHeadless,
       artifactsDir: sitePaths(args.id).failures,
-      chromiumArgs: extraArgs,
+      ...runFlowOptionsFrom(config),
     });
 
-    const outPath = args.out || path.join(sitePaths(args.id).dir, 'output.csv');
-    const written = writeOutput(outPath, stats.records);
+    const written = writeConfiguredOutput(config, args.id, stats.records);
     if (written) logInfo(`wrote ${stats.records.length} row(s) to ${path.relative(REPO_ROOT, written)}`);
 
     if (!ok) process.exitCode = 1;
@@ -207,33 +245,28 @@ async function cmdVerify(args) {
 
 async function cmdPlay(args) {
   const flow = loadFlow(args.id);
+  const config = loadConfig({ cwd: process.cwd(), flow, cliArgs: args });
+
   if (args.times) overrideTimes(flow.steps, args.times);
   if (!flow.verified) logWarn('this flow has never passed verification; run `verify --id ' + args.id + '` before trusting it');
 
   const paths = sitePaths(args.id);
 
-  // Build extra Chromium args from server-oriented flags (opt-in).
-  const extraArgs = [];
-  if (args.disableDevShmUsage) extraArgs.push('--disable-dev-shm-usage');
-  if (args.disableGpu) extraArgs.push('--disable-gpu');
-  if (args.noSandbox) extraArgs.push('--no-sandbox');
-
   // `--headless` on the CLI still wins when passed explicitly; otherwise default to
   // headless UNLESS this site was auto-detected (or --requires-headed'd, at record/verify
   // time) as needing headed mode - see headless-probe.js.
   const { stats, fingerprint } = await withPage(args.headless ?? !flow.requiresHeaded, async (page) => {
-    const runStats = await runFlow(flow, { page, artifactsDir: paths.failures });
+    const runStats = await runFlow(flow, { page, artifactsDir: paths.failures, ...runFlowOptionsFrom(config) });
     // Captured while the browser is still open and sitting on the final page.
     return { stats: runStats, fingerprint: await drift.captureFingerprint(page, flow, runStats) };
-  }, { display: args.display, screen: args.screen }, extraArgs);
+  }, { display: config.display.mode, screen: config.display.screen }, config.browser.args);
 
   logInfo(`done: ${stats.actions} action(s), ${stats.repeatIterations} repeat iteration(s), ${stats.foreachIterations} item(s)`);
   for (const f of stats.fallbacks) logWarn(`${f.path} ${f.message}`);
   for (const w of stats.warnings) logWarn(`${w.path} ${w.type}: ${w.message}`);
   for (const e of stats.errors) logError(`${e.path} ${e.type}: ${e.message}`);
 
-  const outPath = args.out || path.join(paths.dir, 'output.csv');
-  const written = writeOutput(outPath, stats.records);
+  const written = writeConfiguredOutput(config, args.id, stats.records);
   if (written) logInfo(`wrote ${stats.records.length} row(s) to ${path.relative(REPO_ROOT, written)}`);
 
   const previous = drift.loadPreviousFingerprint(args.id);

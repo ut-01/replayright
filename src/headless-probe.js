@@ -14,13 +14,16 @@ const { HEADLESS_PROBE_TIMEOUT_MS } = require('./constants');
 // real browser.
 const USER_AGENT = 'curl/8.0';
 
-async function probeRequiresHeaded(url) {
+// `timeoutMs` is config.js's `timeouts.probeMs` - cli.js resolves and passes it once a
+// config is loaded. Defaults to the constants.js value, so a caller that knows nothing
+// about config.js (every existing test, and any direct call) is unaffected.
+async function probeRequiresHeaded(url, { timeoutMs = HEADLESS_PROBE_TIMEOUT_MS } = {}) {
   try {
     const res = await fetch(url, {
       method: 'GET',
       headers: { 'User-Agent': USER_AGENT },
       redirect: 'follow',
-      signal: AbortSignal.timeout(HEADLESS_PROBE_TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
     });
     if (!res.ok) {
       return { requiresHeaded: true, reason: `plain HTTP request got ${res.status} ${res.statusText}` };
