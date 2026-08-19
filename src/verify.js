@@ -103,6 +103,7 @@ async function verifyFlow(flow, options = {}) {
     minDelayMs: options.minDelayMs,
     maxDelayMs: options.maxDelayMs,
     resolveWaitMs: options.resolveWaitMs,
+    chromiumArgs: options.chromiumArgs,
   });
 
   printReport({ shapeProblems, advisories, stats });

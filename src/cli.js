@@ -56,6 +56,12 @@ Options:
                                  fail naturally if no DISPLAY exists; ":N" pins a display
                                  number. No-op when DISPLAY is already set or on non-Linux.
   --screen <WxHxD>                Xvfb screen spec when Xvfb is started. Default 1920x1080x24.
+  --disable-dev-shm-usage        play/verify only. Disable /dev/shm usage (useful in
+                                 containers with small /dev/shm). Opt-in flag.
+  --disable-gpu                  play/verify only. Disable GPU acceleration. Opt-in flag.
+  --no-sandbox                   play/verify only. Disable Chromium sandbox (required
+                                 when running as root in containers, but is an attack
+                                 surface otherwise). Opt-in flag.
 `);
 }
 
@@ -82,10 +88,11 @@ function overrideTimes(steps, times) {
 // of `play` on a `requiresHeaded` site) it stands up a scoped Xvfb here. Skipped
 // entirely when going headless - no display is needed, and ensureDisplay() would only
 // do pointless work (or worse, throw over a missing Xvfb binary nobody needed).
-async function withPage(headless, fn, displayArgs = {}) {
+async function withPage(headless, fn, displayArgs = {}, extraArgs = []) {
   const displayHandle = headless ? { dispose: () => {} } : await ensureDisplay({ mode: displayArgs.display, screen: displayArgs.screen });
   try {
-    const browser = await chromium.launch({ headless, args: CHROMIUM_ARGS });
+    const allArgs = [...CHROMIUM_ARGS, ...extraArgs];
+    const browser = await chromium.launch({ headless, args: allArgs });
     try {
       const context = await browser.newContext();
       return await fn(await context.newPage());
@@ -170,6 +177,12 @@ async function cmdVerify(args) {
 
   if (args.times) overrideTimes(flow.steps, args.times);
 
+  // Build extra Chromium args from server-oriented flags (opt-in).
+  const extraArgs = [];
+  if (args.disableDevShmUsage) extraArgs.push('--disable-dev-shm-usage');
+  if (args.disableGpu) extraArgs.push('--disable-gpu');
+  if (args.noSandbox) extraArgs.push('--no-sandbox');
+
   // verify defaults headed too ("replay headed + per-step report"), so it needs the
   // same Xvfb treatment as record on a headless Linux box. Skipped when explicitly run
   // headless.
@@ -179,6 +192,7 @@ async function cmdVerify(args) {
     const { ok, stats } = await verifyFlow(flow, {
       headless: verifyHeadless,
       artifactsDir: sitePaths(args.id).failures,
+      chromiumArgs: extraArgs,
     });
 
     const outPath = args.out || path.join(sitePaths(args.id).dir, 'output.csv');
@@ -198,6 +212,12 @@ async function cmdPlay(args) {
 
   const paths = sitePaths(args.id);
 
+  // Build extra Chromium args from server-oriented flags (opt-in).
+  const extraArgs = [];
+  if (args.disableDevShmUsage) extraArgs.push('--disable-dev-shm-usage');
+  if (args.disableGpu) extraArgs.push('--disable-gpu');
+  if (args.noSandbox) extraArgs.push('--no-sandbox');
+
   // `--headless` on the CLI still wins when passed explicitly; otherwise default to
   // headless UNLESS this site was auto-detected (or --requires-headed'd, at record/verify
   // time) as needing headed mode - see headless-probe.js.
@@ -205,7 +225,7 @@ async function cmdPlay(args) {
     const runStats = await runFlow(flow, { page, artifactsDir: paths.failures });
     // Captured while the browser is still open and sitting on the final page.
     return { stats: runStats, fingerprint: await drift.captureFingerprint(page, flow, runStats) };
-  }, { display: args.display, screen: args.screen });
+  }, { display: args.display, screen: args.screen }, extraArgs);
 
   logInfo(`done: ${stats.actions} action(s), ${stats.repeatIterations} repeat iteration(s), ${stats.foreachIterations} item(s)`);
   for (const f of stats.fallbacks) logWarn(`${f.path} ${f.message}`);
@@ -281,6 +301,9 @@ async function main() {
       out: { type: 'string' },
       display: { type: 'string' },
       screen: { type: 'string' },
+      'disable-dev-shm-usage': { type: 'boolean' },
+      'disable-gpu': { type: 'boolean' },
+      'no-sandbox': { type: 'boolean' },
       help: { type: 'boolean' },
     },
     allowPositionals: true,
@@ -305,6 +328,13 @@ async function main() {
     // "use its defaults" ('auto' mode, 1920x1080x24 screen).
     display: values.display,
     screen: values.screen,
+    // Chromium args for server/container environments (play/verify only).
+    // These are opt-in flags that append to CHROMIUM_ARGS from constants.js.
+    disableDevShmUsage: values['disable-dev-shm-usage'] ?? false,
+    disableGpu: values['disable-gpu'] ?? false,
+    // --no-sandbox is a security tradeoff: required when running as root in containers,
+    // but it disables a genuine sandbox escape protection otherwise. Never default it on.
+    noSandbox: values['no-sandbox'] ?? false,
   };
   if (command !== 'list' && !args.id) throw new Error(`${command} needs --id <id>`);
 

@@ -24,6 +24,7 @@ const {
   MAX_DELAY_MS,
   SETTLE_TIMEOUT_MS,
   RESOLVE_WAIT_MS,
+  CHROMIUM_ARGS,
 } = require('./constants');
 
 // Actions Playwright records that describe the recording session itself rather than
@@ -538,7 +539,8 @@ async function runFlow(flow, options = {}) {
   let page = options.page ?? null;
 
   if (!page) {
-    browser = await chromium.launch({ headless: opts.headless });
+    const allArgs = [...CHROMIUM_ARGS, ...(options.chromiumArgs ?? [])];
+    browser = await chromium.launch({ headless: opts.headless, args: allArgs });
     const context = await browser.newContext();
     page = await context.newPage();
   }

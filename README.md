@@ -94,3 +94,53 @@ the earliest word that the page beyond has changed its shape.
   `types.d.ts` — a borrowed key, not a granted one. Proven true against
   `playwright-core@1.62.1`; should that familiar be replaced with a newer one, the trials
   in `test/` must be run again before anything else is trusted.
+
+## Deployment in containers
+
+A `Dockerfile` is provided for running flows in headless container environments (Docker,
+Kubernetes, cron on cloud runners). It ships the Chromium browser and system dependencies,
+so no additional setup is needed beyond `docker build`.
+
+### Building
+
+```bash
+docker build -t replayright:latest .
+```
+
+### Running a scheduled flow
+
+The image runs as a non-root user (`pwuser`) for security. A typical cron entry on a
+cloud runner would be:
+
+```bash
+# Replay flow 'example' every day at 3 AM UTC, exit non-zero if the flow is broken.
+0 3 * * * docker run --rm replayright:latest play --id=example
+```
+
+The image already has `/dev/shm` and GPU disabled by default where needed for most
+container platforms. If you encounter Chromium crashes due to small `/dev/shm` or need
+GPU support:
+
+```bash
+# Disable /dev/shm usage (useful in Docker with --shm-size=1g or similar tight limits)
+docker run --rm replayright:latest play --id=example --disable-dev-shm-usage
+
+# Enable GPU if available (remove the default --disable-gpu equivalent)
+docker run --rm replayright:latest play --id=example --disable-gpu=false
+```
+
+### Exit codes
+
+Scheduled jobs rely on the exit code contract. The `play` command (and `verify`) exit
+non-zero on any of:
+
+- **`BROKEN` drift check**: the flow's selectors or structure have changed significantly
+  enough that the run is no longer trustworthy. The previous fingerprint is held (not
+  updated), so the job remains in a broken state until fixed.
+- **`SELECTOR_UNRESOLVED`**: a step could not resolve any of its selector candidates —
+  the site changed structurally, and the flow cannot proceed.
+- **`aborted`**: the run stopped early due to consecutive failures exceeding the error
+  budget (`MAX_CONSECUTIVE_ERRORS`, default 3).
+- **Zero actions ran**: the flow executed no steps at all (usually a startup failure).
+
+On success, the exit code is 0 and the fingerprint is updated with the new counts.
