@@ -27,6 +27,7 @@ const { isOverlayAction, parseMarker } = require('./generalize');
 const { MARKER_PREFIX, CHROMIUM_ARGS } = require('./constants');
 const { logInfo, logWarn, logError } = require('./log');
 const { clearTrackingData } = require('./profile');
+const { ensureDisplay } = require('./display');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 
@@ -108,7 +109,10 @@ function countSteps(steps) {
 // of being re-fought every time, and a flow that depends on being logged in would break
 // if that state were wiped on every run. Turn it on only for a site where you deliberately
 // want every recording to start logged-out and cookie-free (see profile.js).
-async function recordSite({ siteId, url, drive = null, headless = false, userDataDir, viewport, clearTracking = false }) {
+async function recordSite({
+  siteId, url, drive = null, headless = false, userDataDir, viewport, clearTracking = false,
+  display = 'auto', screen,
+}) {
   // `npx playwright codegen` has no flag to inject our own overlay, and the eventSink we
   // need is only wired up when the recorder runs in api mode - which the CLI never does.
   // So we drive the recorder ourselves.
@@ -133,6 +137,25 @@ async function recordSite({ siteId, url, drive = null, headless = false, userDat
   const profileDir = userDataDir || path.join(os.tmpdir(), `playright-profile-${siteId}`);
   if (clearTracking) clearTrackingData(profileDir);
 
+  // Recording is a real headed Chromium window by design (CLAUDE.md: "record a browser
+  // flow once in a real Chromium window") - a person clicks the R/F buttons in it. On a
+  // normal desktop DISPLAY is already set and this is a no-op; on a headless Linux/cloud
+  // box it stands up a scoped Xvfb so the launch below can succeed at all. Skipped
+  // outright when `headless` was passed true (the `drive` test seam uses this).
+  const displayHandle = headless ? { dispose: () => {} } : await ensureDisplay({ mode: display, screen });
+
+  try {
+    return await recordSession({
+      siteId, url, drive, headless, viewport, clearTracking, profileDir, paths,
+    });
+  } finally {
+    // Same tier as the browser-close path below, not a separate afterthought: an
+    // orphaned Xvfb process per recording session is a real leak on a long-lived box.
+    displayHandle.dispose();
+  }
+}
+
+async function recordSession({ siteId, url, drive, headless, viewport, clearTracking, profileDir, paths }) {
   const context = await chromium.launchPersistentContext(profileDir, {
     headless,
     viewport: viewport ?? null,

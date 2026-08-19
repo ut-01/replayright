@@ -14,6 +14,7 @@ const drift = require('./drift');
 const { probeRequiresHeaded } = require('./headless-probe');
 const { logInfo, logWarn, logError } = require('./log');
 const { CHROMIUM_ARGS } = require('./constants');
+const { ensureDisplay } = require('./display');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const SITES_DIR = path.join(REPO_ROOT, 'sites');
@@ -48,6 +49,13 @@ Options:
   --out <path>                   play/verify only. Where to write extracted rows (CSV or
                                  JSON by extension). Default sites/<id>/output.csv.
                                  Written only if the flow tags at least one field.
+  --display <auto|off|:N>        How to get a real X display for a headed browser on a
+                                 Linux box with no DISPLAY (e.g. an unattended cloud
+                                 runner). "auto" (default) starts a scoped Xvfb on a free
+                                 display number; "off" disables that and lets the launch
+                                 fail naturally if no DISPLAY exists; ":N" pins a display
+                                 number. No-op when DISPLAY is already set or on non-Linux.
+  --screen <WxHxD>                Xvfb screen spec when Xvfb is started. Default 1920x1080x24.
 `);
 }
 
@@ -69,13 +77,27 @@ function overrideTimes(steps, times) {
   }
 }
 
-async function withPage(headless, fn) {
-  const browser = await chromium.launch({ headless, args: CHROMIUM_ARGS });
+// A headed launch needs a real X display. On a normal desktop DISPLAY is already set
+// and ensureDisplay() is a no-op; on an unattended headless Linux box (the actual point
+// of `play` on a `requiresHeaded` site) it stands up a scoped Xvfb here. Skipped
+// entirely when going headless - no display is needed, and ensureDisplay() would only
+// do pointless work (or worse, throw over a missing Xvfb binary nobody needed).
+async function withPage(headless, fn, displayArgs = {}) {
+  const displayHandle = headless ? { dispose: () => {} } : await ensureDisplay({ mode: displayArgs.display, screen: displayArgs.screen });
   try {
-    const context = await browser.newContext();
-    return await fn(await context.newPage());
+    const browser = await chromium.launch({ headless, args: CHROMIUM_ARGS });
+    try {
+      const context = await browser.newContext();
+      return await fn(await context.newPage());
+    } finally {
+      await browser.close().catch(() => {});
+    }
   } finally {
-    await browser.close().catch(() => {});
+    // Same finally-tier as the browser close above, not a separate afterthought: an
+    // orphaned Xvfb process is exactly the leak this module exists to prevent, and it
+    // must be reaped on every exit path, including one where chromium.launch() itself
+    // threw.
+    displayHandle.dispose();
   }
 }
 
@@ -97,30 +119,45 @@ async function resolveRequiresHeaded(flow, args) {
 async function cmdRecord(args) {
   if (!args.id || !args.url) throw new Error('record needs --id <id> and --url <url>');
 
-  const { flow, paths } = await recordSite({ siteId: args.id, url: args.url, clearTracking: args.clearTracking });
-  if (!flow.steps.length) process.exitCode = 1;
-  if (!flow.steps.length) return;
+  // Recording is always headed - it needs a real Chromium window for the R/F buttons to
+  // be clicked in - and the self-verify replay just below defaults headed too, so this
+  // covers the whole command with one Xvfb instance rather than starting/stopping it
+  // twice. On a normal desktop DISPLAY is already set and this is a no-op.
+  const displayHandle = await ensureDisplay({ mode: args.display, screen: args.screen });
+  try {
+    const { flow, paths } = await recordSite({
+      siteId: args.id,
+      url: args.url,
+      clearTracking: args.clearTracking,
+      display: args.display,
+      screen: args.screen,
+    });
+    if (!flow.steps.length) process.exitCode = 1;
+    if (!flow.steps.length) return;
 
-  await resolveRequiresHeaded(flow, args);
+    await resolveRequiresHeaded(flow, args);
 
-  logInfo('');
-  logInfo('Replaying the recording now to check it actually works...');
-  const { ok } = await verifyFlow(flow, {
-    headless: args.headless ?? false,
-    artifactsDir: paths.failures,
-  });
+    logInfo('');
+    logInfo('Replaying the recording now to check it actually works...');
+    const { ok } = await verifyFlow(flow, {
+      headless: args.headless ?? false,
+      artifactsDir: paths.failures,
+    });
 
-  // `verified` is recorded in the file so `play` can warn when a flow was never proven
-  // to work - a scheduled job silently running an unverified flow is how the previous
-  // versions produced empty output for days without anyone noticing.
-  flow.verified = ok;
-  fs.writeFileSync(paths.flow, JSON.stringify(flow, null, 2));
+    // `verified` is recorded in the file so `play` can warn when a flow was never proven
+    // to work - a scheduled job silently running an unverified flow is how the previous
+    // versions produced empty output for days without anyone noticing.
+    flow.verified = ok;
+    fs.writeFileSync(paths.flow, JSON.stringify(flow, null, 2));
 
-  const emitted = path.join(paths.dir, 'flow.js');
-  fs.writeFileSync(emitted, emitFlow(flow));
-  logInfo(`Readable view written to ${path.relative(REPO_ROOT, emitted)} (debug only - flow.json is what runs).`);
+    const emitted = path.join(paths.dir, 'flow.js');
+    fs.writeFileSync(emitted, emitFlow(flow));
+    logInfo(`Readable view written to ${path.relative(REPO_ROOT, emitted)} (debug only - flow.json is what runs).`);
 
-  if (!ok) process.exitCode = 1;
+    if (!ok) process.exitCode = 1;
+  } finally {
+    displayHandle.dispose();
+  }
 }
 
 async function cmdVerify(args) {
@@ -132,16 +169,26 @@ async function cmdVerify(args) {
   fs.writeFileSync(sitePaths(args.id).flow, JSON.stringify(flow, null, 2));
 
   if (args.times) overrideTimes(flow.steps, args.times);
-  const { ok, stats } = await verifyFlow(flow, {
-    headless: args.headless ?? false,
-    artifactsDir: sitePaths(args.id).failures,
-  });
 
-  const outPath = args.out || path.join(sitePaths(args.id).dir, 'output.csv');
-  const written = writeOutput(outPath, stats.records);
-  if (written) logInfo(`wrote ${stats.records.length} row(s) to ${path.relative(REPO_ROOT, written)}`);
+  // verify defaults headed too ("replay headed + per-step report"), so it needs the
+  // same Xvfb treatment as record on a headless Linux box. Skipped when explicitly run
+  // headless.
+  const verifyHeadless = args.headless ?? false;
+  const displayHandle = verifyHeadless ? { dispose: () => {} } : await ensureDisplay({ mode: args.display, screen: args.screen });
+  try {
+    const { ok, stats } = await verifyFlow(flow, {
+      headless: verifyHeadless,
+      artifactsDir: sitePaths(args.id).failures,
+    });
 
-  if (!ok) process.exitCode = 1;
+    const outPath = args.out || path.join(sitePaths(args.id).dir, 'output.csv');
+    const written = writeOutput(outPath, stats.records);
+    if (written) logInfo(`wrote ${stats.records.length} row(s) to ${path.relative(REPO_ROOT, written)}`);
+
+    if (!ok) process.exitCode = 1;
+  } finally {
+    displayHandle.dispose();
+  }
 }
 
 async function cmdPlay(args) {
@@ -158,7 +205,7 @@ async function cmdPlay(args) {
     const runStats = await runFlow(flow, { page, artifactsDir: paths.failures });
     // Captured while the browser is still open and sitting on the final page.
     return { stats: runStats, fingerprint: await drift.captureFingerprint(page, flow, runStats) };
-  });
+  }, { display: args.display, screen: args.screen });
 
   logInfo(`done: ${stats.actions} action(s), ${stats.repeatIterations} repeat iteration(s), ${stats.foreachIterations} item(s)`);
   for (const f of stats.fallbacks) logWarn(`${f.path} ${f.message}`);
@@ -232,6 +279,8 @@ async function main() {
       'clear-tracking': { type: 'boolean' },
       times: { type: 'string' },
       out: { type: 'string' },
+      display: { type: 'string' },
+      screen: { type: 'string' },
       help: { type: 'boolean' },
     },
     allowPositionals: true,
@@ -252,6 +301,10 @@ async function main() {
     clearTracking: values['clear-tracking'] ?? false,
     times: values.times ? Number(values.times) : undefined,
     out: values.out,
+    // Passed straight through to ensureDisplay() as { mode, screen }; undefined means
+    // "use its defaults" ('auto' mode, 1920x1080x24 screen).
+    display: values.display,
+    screen: values.screen,
   };
   if (command !== 'list' && !args.id) throw new Error(`${command} needs --id <id>`);
 
