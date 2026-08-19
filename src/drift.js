@@ -12,12 +12,13 @@ const path = require('path');
 
 const WARNING_DROP_RATIO = 0.5;
 
-function siteDir(siteId) {
+function siteDir(siteId, sitesDir) {
+  if (sitesDir) return path.join(sitesDir, siteId);
   return path.resolve(__dirname, '..', 'sites', siteId);
 }
 
-function fingerprintPath(siteId) {
-  return path.join(siteDir(siteId), 'fingerprint.json');
+function fingerprintPath(siteId, sitesDir) {
+  return path.join(siteDir(siteId, sitesDir), 'fingerprint.json');
 }
 
 // Walks the flow and collects the selectors whose match count is worth watching.
@@ -73,9 +74,9 @@ async function captureFingerprint(page, flow, stats = {}) {
 }
 
 // A missing or unparseable fingerprint just means "no history yet", not an error.
-function loadPreviousFingerprint(siteId) {
+function loadPreviousFingerprint(siteId, sitesDir) {
   try {
-    return JSON.parse(fs.readFileSync(fingerprintPath(siteId), 'utf8'));
+    return JSON.parse(fs.readFileSync(fingerprintPath(siteId, sitesDir), 'utf8'));
   } catch {
     return null;
   }
@@ -91,12 +92,12 @@ function loadPreviousFingerprint(siteId) {
 //
 // history.jsonl still records every run, broken ones included, so the forensic trail is
 // complete either way.
-function saveFingerprint(siteId, fingerprint, status = 'OK') {
-  const dir = siteDir(siteId);
+function saveFingerprint(siteId, fingerprint, status = 'OK', sitesDir) {
+  const dir = siteDir(siteId, sitesDir);
   fs.mkdirSync(dir, { recursive: true });
   fs.appendFileSync(path.join(dir, 'history.jsonl'), `${JSON.stringify({ ...fingerprint, status })}\n`);
   if (status === 'BROKEN') return false;
-  fs.writeFileSync(fingerprintPath(siteId), JSON.stringify(fingerprint, null, 2));
+  fs.writeFileSync(fingerprintPath(siteId, sitesDir), JSON.stringify(fingerprint, null, 2));
   return true;
 }
 

@@ -5,7 +5,7 @@ const path = require('path');
 const { parseArgs } = require('util');
 const { chromium } = require('playwright');
 
-const { recordSite, sitePaths, countSteps } = require('./record');
+const { recordSite, sitePaths: recordSitePaths, countSteps } = require('./record');
 const { verifyFlow } = require('./verify');
 const { runFlow } = require('./interpret');
 const { emitFlow } = require('./emit');
@@ -15,11 +15,10 @@ const { probeRequiresHeaded } = require('./headless-probe');
 const { logInfo, logWarn, logError } = require('./log');
 const { CHROMIUM_ARGS } = require('./constants');
 const { ensureDisplay } = require('./display');
-const { loadConfig, resolveOutputPath, resolveOutputFormat } = require('./config');
+const { loadConfig, resolveOutputPath, resolveOutputFormat, resolveSitesDir, defaults, CONFIG_FILENAME } = require('./config');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
-const SITES_DIR = path.join(REPO_ROOT, 'sites');
-const COMMANDS = ['record', 'play', 'verify', 'emit', 'list'];
+const COMMANDS = ['record', 'play', 'verify', 'emit', 'list', 'init'];
 
 function usage() {
   console.log(`playRight - record a web flow once, replay it every day.
@@ -29,10 +28,12 @@ Usage: node src/cli.js <command> [options]
   record --id <id> --url <url>   Record a flow. Use the R/F buttons in the browser to
                                  mark loops, then close the window. The recording is
                                  replayed immediately to verify it.
-  play   --id <id>               Replay sites/<id>/flow.json. Exits non-zero if the
-                                 drift check reports BROKEN.
+  play   --id <id>               Replay from the configured sites directory. Exits
+                                 non-zero if the drift check reports BROKEN.
   verify --id <id>               Replay and report, without updating the fingerprint.
   emit   --id <id>               Write a readable .js view of the flow (debug only).
+  init                           Scaffold a replayright.config.json in the current
+                                 directory with all defaults and explanations.
   list                           List recorded sites.
 
 Options:
@@ -50,6 +51,7 @@ Options:
   --out <path>                   play/verify only. Where to write extracted rows (CSV or
                                  JSON by extension). Default sites/<id>/output.csv.
                                  Written only if the flow tags at least one field.
+  --sites-dir <path>             Where per-site recordings live. Default ./sites.
   --display <auto|off|:N>        How to get a real X display for a headed browser on a
                                  Linux box with no DISPLAY (e.g. an unattended cloud
                                  runner). "auto" (default) starts a scoped Xvfb on a free
@@ -66,13 +68,13 @@ Options:
 `);
 }
 
-function loadFlow(siteId) {
-  const { flow: flowPath } = sitePaths(siteId);
+function loadFlow(siteId, sitesDir) {
+  const { flow: flowPath } = sitePaths(siteId, sitesDir);
   if (!fs.existsSync(flowPath)) {
-    throw new Error(`No flow for "${siteId}" (expected ${path.relative(REPO_ROOT, flowPath)}). Record it first.`);
+    throw new Error(`No flow for "${siteId}" (expected ${path.relative(process.cwd(), flowPath)}). Record it first.`);
   }
   const flow = JSON.parse(fs.readFileSync(flowPath, 'utf8'));
-  if (!flow.steps?.length) throw new Error(`${path.relative(REPO_ROOT, flowPath)} has no steps.`);
+  if (!flow.steps?.length) throw new Error(`${path.relative(process.cwd(), flowPath)} has no steps.`);
   return flow;
 }
 
@@ -101,6 +103,19 @@ function runFlowOptionsFrom(config) {
     // --no-sandbox mapped to via configFromCliArgs, so cli.js has no need to rebuild
     // that list by hand a second time.
     chromiumArgs: config.browser.args,
+  };
+}
+
+// Build site paths (flow.json, actions, failures dir) for a given sites directory.
+// This wraps record.js's sitePaths but uses a resolved sitesDir from config instead of
+// the hardcoded REPO_ROOT/sites.
+function sitePaths(siteId, sitesDir) {
+  const dir = path.join(sitesDir, siteId);
+  return {
+    dir,
+    flow: path.join(dir, 'flow.json'),
+    actions: path.join(dir, 'last-recording.actions.json'),
+    failures: path.join(dir, 'failures'),
   };
 }
 
@@ -161,7 +176,8 @@ async function cmdRecord(args) {
 
   // No flow exists yet, so this is defaults -> file -> env -> CLI; the flow.config layer
   // simply has nothing to contribute for a fresh recording.
-  const config = loadConfig({ cwd: process.cwd(), cliArgs: args });
+  const config = loadConfig({ cwd: process.cwd(), cliOverrides: { sitesDir: args.sitesDir }, cliArgs: args });
+  const resolvedSitesDir = resolveSitesDir(config);
 
   // Recording is always headed - it needs a real Chromium window for the R/F buttons to
   // be clicked in - and the self-verify replay just below defaults headed too, so this
@@ -178,6 +194,7 @@ async function cmdRecord(args) {
       display: config.display.mode,
       screen: config.display.screen,
       chromiumArgs: config.browser.args,
+      sitesDir: resolvedSitesDir,
     });
     if (!flow.steps.length) process.exitCode = 1;
     if (!flow.steps.length) return;
@@ -200,7 +217,7 @@ async function cmdRecord(args) {
 
     const emitted = path.join(paths.dir, 'flow.js');
     fs.writeFileSync(emitted, emitFlow(flow));
-    logInfo(`Readable view written to ${path.relative(REPO_ROOT, emitted)} (debug only - flow.json is what runs).`);
+    logInfo(`Readable view written to ${path.relative(process.cwd(), emitted)} (debug only - flow.json is what runs).`);
 
     if (!ok) process.exitCode = 1;
   } finally {
@@ -209,16 +226,18 @@ async function cmdRecord(args) {
 }
 
 async function cmdVerify(args) {
-  const flow = loadFlow(args.id);
+  const config = loadConfig({ cwd: process.cwd(), cliOverrides: { sitesDir: args.sitesDir } });
+  const resolvedSitesDir = resolveSitesDir(config);
+  const flow = loadFlow(args.id, resolvedSitesDir);
 
   // Loaded AFTER the flow so flow.json's own `config` key (per-site tuning a human wrote
   // down by hand) takes part as the flow.config layer, one step under CLI flags.
-  const config = loadConfig({ cwd: process.cwd(), flow, cliArgs: args });
+  const configWithCliArgs = loadConfig({ cwd: process.cwd(), flow, cliOverrides: { sitesDir: args.sitesDir }, cliArgs: args });
 
   // Resolved and persisted BEFORE any `--times` override below - that override is a
   // one-off smoke-run convenience and must never leak into the saved flow.json.
-  await resolveRequiresHeaded(flow, args, config);
-  fs.writeFileSync(sitePaths(args.id).flow, JSON.stringify(flow, null, 2));
+  await resolveRequiresHeaded(flow, args, configWithCliArgs);
+  fs.writeFileSync(sitePaths(args.id, resolvedSitesDir).flow, JSON.stringify(flow, null, 2));
 
   if (args.times) overrideTimes(flow.steps, args.times);
 
@@ -228,16 +247,16 @@ async function cmdVerify(args) {
   const verifyHeadless = args.headless ?? false;
   const displayHandle = verifyHeadless
     ? { dispose: () => {} }
-    : await ensureDisplay({ mode: config.display.mode, screen: config.display.screen });
+    : await ensureDisplay({ mode: configWithCliArgs.display.mode, screen: configWithCliArgs.display.screen });
   try {
     const { ok, stats } = await verifyFlow(flow, {
       headless: verifyHeadless,
-      artifactsDir: sitePaths(args.id).failures,
-      ...runFlowOptionsFrom(config),
+      artifactsDir: sitePaths(args.id, resolvedSitesDir).failures,
+      ...runFlowOptionsFrom(configWithCliArgs),
     });
 
-    const written = writeConfiguredOutput(config, args.id, stats.records);
-    if (written) logInfo(`wrote ${stats.records.length} row(s) to ${path.relative(REPO_ROOT, written)}`);
+    const written = writeConfiguredOutput(configWithCliArgs, args.id, stats.records);
+    if (written) logInfo(`wrote ${stats.records.length} row(s) to ${path.relative(process.cwd(), written)}`);
 
     if (!ok) process.exitCode = 1;
   } finally {
@@ -246,32 +265,34 @@ async function cmdVerify(args) {
 }
 
 async function cmdPlay(args) {
-  const flow = loadFlow(args.id);
-  const config = loadConfig({ cwd: process.cwd(), flow, cliArgs: args });
+  const config = loadConfig({ cwd: process.cwd(), cliOverrides: { sitesDir: args.sitesDir } });
+  const resolvedSitesDir = resolveSitesDir(config);
+  const flow = loadFlow(args.id, resolvedSitesDir);
+  const configWithCliArgs = loadConfig({ cwd: process.cwd(), flow, cliOverrides: { sitesDir: args.sitesDir }, cliArgs: args });
 
   if (args.times) overrideTimes(flow.steps, args.times);
   if (!flow.verified) logWarn('this flow has never passed verification; run `verify --id ' + args.id + '` before trusting it');
 
-  const paths = sitePaths(args.id);
+  const paths = sitePaths(args.id, resolvedSitesDir);
 
   // `--headless` on the CLI still wins when passed explicitly; otherwise default to
   // headless UNLESS this site was auto-detected (or --requires-headed'd, at record/verify
   // time) as needing headed mode - see headless-probe.js.
   const { stats, fingerprint } = await withPage(args.headless ?? !flow.requiresHeaded, async (page) => {
-    const runStats = await runFlow(flow, { page, artifactsDir: paths.failures, ...runFlowOptionsFrom(config) });
+    const runStats = await runFlow(flow, { page, artifactsDir: paths.failures, ...runFlowOptionsFrom(configWithCliArgs) });
     // Captured while the browser is still open and sitting on the final page.
     return { stats: runStats, fingerprint: await drift.captureFingerprint(page, flow, runStats) };
-  }, { display: config.display.mode, screen: config.display.screen }, config.browser.args);
+  }, { display: configWithCliArgs.display.mode, screen: configWithCliArgs.display.screen }, configWithCliArgs.browser.args);
 
   logInfo(`done: ${stats.actions} action(s), ${stats.repeatIterations} repeat iteration(s), ${stats.foreachIterations} item(s)`);
   for (const f of stats.fallbacks) logWarn(`${f.path} ${f.message}`);
   for (const w of stats.warnings) logWarn(`${w.path} ${w.type}: ${w.message}`);
   for (const e of stats.errors) logError(`${e.path} ${e.type}: ${e.message}`);
 
-  const written = writeConfiguredOutput(config, args.id, stats.records);
-  if (written) logInfo(`wrote ${stats.records.length} row(s) to ${path.relative(REPO_ROOT, written)}`);
+  const written = writeConfiguredOutput(configWithCliArgs, args.id, stats.records);
+  if (written) logInfo(`wrote ${stats.records.length} row(s) to ${path.relative(process.cwd(), written)}`);
 
-  const previous = drift.loadPreviousFingerprint(args.id);
+  const previous = drift.loadPreviousFingerprint(args.id, resolvedSitesDir);
   const { status, issues } = drift.classifyDrift(previous, fingerprint);
 
   if (status === 'OK') {
@@ -282,7 +303,7 @@ async function cmdPlay(args) {
     for (const issue of issues) log(`  [${issue.severity}] ${issue.reason}`);
   }
 
-  if (!drift.saveFingerprint(args.id, fingerprint, status)) {
+  if (!drift.saveFingerprint(args.id, fingerprint, status, resolvedSitesDir)) {
     logWarn('keeping the previous fingerprint as the baseline so this stays BROKEN until it is fixed');
   }
 
@@ -296,28 +317,145 @@ async function cmdPlay(args) {
 }
 
 function cmdEmit(args) {
-  const flow = loadFlow(args.id);
-  const out = path.join(sitePaths(args.id).dir, 'flow.js');
+  const config = loadConfig({ cwd: process.cwd(), cliOverrides: { sitesDir: args.sitesDir } });
+  const resolvedSitesDir = resolveSitesDir(config);
+  const flow = loadFlow(args.id, resolvedSitesDir);
+  const out = path.join(sitePaths(args.id, resolvedSitesDir).dir, 'flow.js');
   fs.writeFileSync(out, emitFlow(flow));
-  logInfo(`wrote ${path.relative(REPO_ROOT, out)} (debug only - flow.json is what runs)`);
+  logInfo(`wrote ${path.relative(process.cwd(), out)} (debug only - flow.json is what runs)`);
 }
 
-function cmdList() {
-  if (!fs.existsSync(SITES_DIR)) return logInfo('no sites recorded yet');
-  const entries = fs.readdirSync(SITES_DIR, { withFileTypes: true })
+function cmdList(args) {
+  const config = loadConfig({ cwd: process.cwd(), cliOverrides: { sitesDir: args.sitesDir } });
+  const sitesDir = resolveSitesDir(config);
+  if (!fs.existsSync(sitesDir)) return logInfo('no sites recorded yet');
+  const entries = fs.readdirSync(sitesDir, { withFileTypes: true })
     .filter((e) => e.isDirectory() && e.name !== '_template')
-    .filter((e) => fs.existsSync(path.join(SITES_DIR, e.name, 'flow.json')));
+    .filter((e) => fs.existsSync(path.join(sitesDir, e.name, 'flow.json')));
 
   if (!entries.length) return logInfo('no sites recorded yet');
   for (const entry of entries) {
     try {
-      const flow = JSON.parse(fs.readFileSync(path.join(SITES_DIR, entry.name, 'flow.json'), 'utf8'));
+      const flow = JSON.parse(fs.readFileSync(path.join(sitesDir, entry.name, 'flow.json'), 'utf8'));
       const headedness = flow.requiresHeaded ? 'headed' : 'headless';
       console.log(`${entry.name}\t${flow.verified ? 'verified' : 'UNVERIFIED'}\t${headedness}\t${countSteps(flow.steps)} steps\t${flow.startUrl}`);
     } catch (err) {
       console.log(`${entry.name}\t(unreadable flow.json: ${err.message})`);
     }
   }
+}
+
+function cmdInit() {
+  const configPath = path.join(process.cwd(), CONFIG_FILENAME);
+  if (fs.existsSync(configPath)) {
+    throw new Error(`${CONFIG_FILENAME} already exists at ${configPath}. Remove it first if you want to regenerate it.`);
+  }
+
+  const defaultConfig = defaults();
+  // Emit clean JSON with just the structure and values
+  const configContent = JSON.stringify(defaultConfig, null, 2);
+  fs.writeFileSync(configPath, configContent);
+  logInfo(`Scaffold config written to ${configPath}`);
+
+  // Also write an example file with comments for reference
+  const examplePath = path.join(process.cwd(), 'replayright.config.example.jsonc');
+  const exampleContent = buildExampleConfigWithComments();
+  fs.writeFileSync(examplePath, exampleContent);
+  logInfo(`Example config with comments written to ${examplePath}`);
+}
+
+// Build a .jsonc (JSON with comments) example config explaining every key.
+// Uses actual defaults from config.js to ensure they stay in sync.
+function buildExampleConfigWithComments() {
+  const def = defaults();
+  return `{
+  // Where per-site recordings live. Relative paths resolve against the directory the
+  // config file was found in. Default is ${JSON.stringify(def.sitesDir)} (the repo's own sites/).
+  "sitesDir": ${JSON.stringify(def.sitesDir)},
+
+  "browser": {
+    // Playwright browser channel ('chrome', 'msedge', ...). null = bundled Chromium,
+    // which is what every recording so far was made against.
+    "channel": ${JSON.stringify(def.browser.channel)},
+
+    // EXTRA Chromium args, appended to the hardcoded defaults - not a replacement for them.
+    // Used for environment-specific additions like '--no-sandbox' in a container.
+    // Arrays REPLACE across config layers rather than concatenating.
+    "args": ${JSON.stringify(def.browser.args)},
+
+    // Viewport size: { width, height } or null to let Playwright pick its own default.
+    "viewport": ${JSON.stringify(def.browser.viewport)},
+
+    // User agent string or null to use the default.
+    "userAgent": ${JSON.stringify(def.browser.userAgent)},
+
+    // Browser locale like 'de-DE' or null.
+    "locale": ${JSON.stringify(def.browser.locale)},
+
+    // Timezone ID like 'Europe/Berlin' or null.
+    "timezoneId": ${JSON.stringify(def.browser.timezoneId)},
+
+    // Proxy configuration: { server, bypass?, username?, password? } or null.
+    "proxy": ${JSON.stringify(def.browser.proxy)}
+  },
+
+  "display": {
+    // How to get a real X display for headed mode on headless Linux.
+    // 'auto' (default) starts a scoped Xvfb; 'off' disables it; ':N' pins a display number.
+    "mode": ${JSON.stringify(def.display.mode)},
+
+    // Xvfb screen spec when Xvfb is started. Default ${JSON.stringify(def.display.screen)}.
+    "screen": ${JSON.stringify(def.display.screen)}
+  },
+
+  "profile": {
+    // Recording profiles persist in os.tmpdir()/playright-profile-<id> so cookie banners
+    // and logins survive between sessions. false = throwaway profile dir per recording.
+    "persist": ${JSON.stringify(def.profile.persist)},
+
+    // Wipe cookies/storage before and after recording, so the session starts and ends
+    // logged-out. OFF by default: on by default is fatal for any flow behind a login.
+    "clearTracking": ${JSON.stringify(def.profile.clearTracking)},
+
+    // Override the profile directory entirely. null = use the os.tmpdir() convention.
+    "dir": ${JSON.stringify(def.profile.dir)}
+  },
+
+  "timeouts": {
+    // Wait time for selectors to resolve (ms). Increased for slow sites.
+    "resolveWaitMs": ${JSON.stringify(def.timeouts.resolveWaitMs)},
+
+    // Maximum time for page content to settle after navigation (ms).
+    "settleMs": ${JSON.stringify(def.timeouts.settleMs)},
+
+    // Headless probe timeout - how long to wait for the probe to complete (ms).
+    "probeMs": ${JSON.stringify(def.timeouts.probeMs)}
+  },
+
+  "repeat": {
+    // Default iteration count for repeat blocks that don't specify their own 'times'.
+    "defaultTimes": ${JSON.stringify(def.repeat.defaultTimes)},
+
+    // Upper bound on any single repeat block's 'times', whether from flow.json or --times.
+    // Prevents accidental high iteration counts.
+    "maxTimes": ${JSON.stringify(def.repeat.maxTimes)}
+  },
+
+  "output": {
+    // Template path for output files. {id} is substituted with the site id.
+    // Default sites/{id}/output.csv reproduces today's behavior.
+    "path": ${JSON.stringify(def.output.path)},
+
+    // Output format: 'auto' (extension-based), 'csv', or 'json'.
+    "format": ${JSON.stringify(def.output.format)}
+  },
+
+  "log": {
+    // Log format: 'text' (human-readable) or 'json' (structured, reserved for future use).
+    "format": ${JSON.stringify(def.log.format)}
+  }
+}
+`;
 }
 
 async function main() {
@@ -334,6 +472,7 @@ async function main() {
       'clear-tracking': { type: 'boolean' },
       times: { type: 'string' },
       out: { type: 'string' },
+      'sites-dir': { type: 'string' },
       display: { type: 'string' },
       screen: { type: 'string' },
       'disable-dev-shm-usage': { type: 'boolean' },
@@ -359,6 +498,7 @@ async function main() {
     clearTracking: values['clear-tracking'] ?? false,
     times: values.times ? Number(values.times) : undefined,
     out: values.out,
+    sitesDir: values['sites-dir'],
     // Passed straight through to ensureDisplay() as { mode, screen }; undefined means
     // "use its defaults" ('auto' mode, 1920x1080x24 screen).
     display: values.display,
@@ -371,13 +511,14 @@ async function main() {
     // but it disables a genuine sandbox escape protection otherwise. Never default it on.
     noSandbox: values['no-sandbox'] ?? false,
   };
-  if (command !== 'list' && !args.id) throw new Error(`${command} needs --id <id>`);
+  if (command !== 'init' && command !== 'list' && !args.id) throw new Error(`${command} needs --id <id>`);
 
   if (command === 'record') return cmdRecord(args);
   if (command === 'play') return cmdPlay(args);
   if (command === 'verify') return cmdVerify(args);
   if (command === 'emit') return cmdEmit(args);
-  if (command === 'list') return cmdList();
+  if (command === 'init') return cmdInit();
+  if (command === 'list') return cmdList(args);
 }
 
 main().catch((err) => {

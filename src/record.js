@@ -32,8 +32,8 @@ const { ensureDisplay } = require('./display');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 
-function sitePaths(siteId) {
-  const dir = path.join(REPO_ROOT, 'sites', siteId);
+function sitePaths(siteId, sitesDir = path.join(REPO_ROOT, 'sites')) {
+  const dir = path.join(sitesDir, siteId);
   return {
     dir,
     flow: path.join(dir, 'flow.json'),
@@ -128,6 +128,9 @@ async function recordSite({
   // This is config.js's browser.args layer; cli.js is what actually resolves and passes
   // it. Defaults to none, so every existing caller (all current tests) is unaffected.
   chromiumArgs = [],
+  // config.js's resolved sitesDir (Phase 5.4's --sites-dir). Defaults to the repo's own
+  // sites/, matching every pre-5.4 caller's behavior unchanged.
+  sitesDir = path.join(REPO_ROOT, 'sites'),
 }) {
   // `npx playwright codegen` has no flag to inject our own overlay, and the eventSink we
   // need is only wired up when the recorder runs in api mode - which the CLI never does.
@@ -144,7 +147,7 @@ async function recordSite({
   // emits those events.
   delete process.env.PW_CODEGEN_NO_INSPECTOR; // would make RecorderApp.show() a no-op
 
-  const paths = sitePaths(siteId);
+  const paths = sitePaths(siteId, sitesDir);
   fs.mkdirSync(paths.dir, { recursive: true });
 
   // Resolve which directory backs the persistent context. Priority: an explicit
