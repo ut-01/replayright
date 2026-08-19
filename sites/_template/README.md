@@ -87,6 +87,25 @@ you get a per-step report.
 | `fingerprint.json` / `history.jsonl` | Selector match counts per run, for drift detection. |
 | `failures/` | Screenshot + HTML captured at the moment any step failed. |
 
+## Recording profile
+
+Every recording launches Chromium against a persistent profile dir, controlled by
+`replayright.config.json`'s `profile` block (see `src/config.js`):
+
+| Key | Default | Effect |
+|---|---|---|
+| `profile.persist` | `true` | `true` reuses the stable `os.tmpdir()/playright-profile-<id>` dir across recordings of this site. `false` launches against a fresh, uniquely-named temp dir that is deleted again once the run ends — nothing survives to the next recording. |
+| `profile.clearTracking` | `false` | When `true`, cookies/local storage/session storage/IndexedDB/preferences are wiped from the profile dir both *before* launch and again *after* the browser closes, so the session starts and ends logged-out. |
+| `profile.dir` | `null` | Overrides the profile directory entirely — e.g. pin it somewhere outside the OS temp dir so it survives a reboot that would otherwise clear `/tmp`. |
+
+**The tradeoff runs both ways.** Persisting the profile (the default) means a flow
+inherits cookies and session state across runs: fewer cookie-banner dismissals, fewer
+re-logins, and any auth state you established by hand keeps working. It also means a
+stale or poisoned session — an expired login, a consent choice the site later re-prompts
+for, a tracking cookie that changes what the site serves — can silently affect every
+subsequent recording or replay until someone notices and clears it by hand (or sets
+`clearTracking: true`, or `persist: false` for a clean slate every time).
+
 ## Then
 
 ```

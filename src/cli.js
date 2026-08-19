@@ -173,6 +173,8 @@ async function cmdRecord(args) {
       siteId: args.id,
       url: args.url,
       clearTracking: config.profile.clearTracking,
+      persist: config.profile.persist,
+      dir: config.profile.dir,
       display: config.display.mode,
       screen: config.display.screen,
       chromiumArgs: config.browser.args,

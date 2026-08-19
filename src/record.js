@@ -19,6 +19,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { randomUUID } = require('crypto');
 const { chromium } = require('playwright');
 
 const { buildOverlayScript } = require('./ui-bundle');
@@ -109,8 +110,19 @@ function countSteps(steps) {
 // of being re-fought every time, and a flow that depends on being logged in would break
 // if that state were wiped on every run. Turn it on only for a site where you deliberately
 // want every recording to start logged-out and cookie-free (see profile.js).
+//
+// `persist` (config.js's profile.persist, default true) picks WHICH directory backs the
+// profile: true keeps today's stable `os.tmpdir()/playright-profile-<siteId>` dir, so
+// cookie/session state survives between recordings of the same site; false launches
+// against a fresh, uniquely-named temp dir that is removed again once this run ends, so
+// nothing survives to the next one. `dir` (profile.dir) overrides the stable path with a
+// caller-chosen location - e.g. somewhere outside the OS temp dir that survives a reboot.
+// `userDataDir` remains a separate, higher-priority override: it is the test seam every
+// test file in this repo already passes its own throwaway dir through, and callers that
+// pass it own that directory's lifecycle themselves (it is never auto-removed here).
 async function recordSite({
   siteId, url, drive = null, headless = false, userDataDir, viewport, clearTracking = false,
+  persist = true, dir = null,
   display = 'auto', screen,
   // EXTRA Chromium args, appended to constants.js's CHROMIUM_ARGS - not a replacement.
   // This is config.js's browser.args layer; cli.js is what actually resolves and passes
@@ -135,10 +147,24 @@ async function recordSite({
   const paths = sitePaths(siteId);
   fs.mkdirSync(paths.dir, { recursive: true });
 
-  // A stable profile dir per site, so cookie banners and consent dismissals survive
-  // between recording sessions instead of being re-fought every time - unless
-  // `clearTracking` opts into wiping it (see the doc comment above and profile.js).
-  const profileDir = userDataDir || path.join(os.tmpdir(), `playright-profile-${siteId}`);
+  // Resolve which directory backs the persistent context. Priority: an explicit
+  // `userDataDir` (test seam, caller-owned lifecycle) > `dir` (profile.dir, a
+  // caller-pinned stable location) > `persist: true`'s stable per-site convention >
+  // `persist: false`'s fresh, unique-per-run temp dir. Only the last of these is ours to
+  // clean up afterward - the other three are either explicitly caller-managed or meant to
+  // survive the run by design.
+  let profileDir;
+  let ephemeralProfileDir = false;
+  if (userDataDir) {
+    profileDir = userDataDir;
+  } else if (dir) {
+    profileDir = dir;
+  } else if (persist) {
+    profileDir = path.join(os.tmpdir(), `playright-profile-${siteId}`);
+  } else {
+    profileDir = path.join(os.tmpdir(), `playright-profile-${siteId}-${randomUUID()}`);
+    ephemeralProfileDir = true;
+  }
   if (clearTracking) clearTrackingData(profileDir);
 
   // Recording is a real headed Chromium window by design (CLAUDE.md: "record a browser
@@ -156,6 +182,11 @@ async function recordSite({
     // Same tier as the browser-close path below, not a separate afterthought: an
     // orphaned Xvfb process per recording session is a real leak on a long-lived box.
     displayHandle.dispose();
+    // A fresh temp dir generated for `persist: false` is just as much a leak as the Xvfb
+    // process above if nobody removes it - each run would otherwise accumulate its own
+    // never-reused profile directory forever. Only OUR generated dir is removed; a
+    // caller-supplied `userDataDir` or `dir` stays, since it is not ours to delete.
+    if (ephemeralProfileDir) fs.rmSync(profileDir, { recursive: true, force: true });
   }
 }
 
