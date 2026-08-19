@@ -43,8 +43,10 @@ function auditShape(flow) {
         if (!step.parentSelectors?.length) problems.push(`${at}: foreach has no parent selector candidates`);
         // A foreach whose body never touches the item would perform identical
         // page-level actions N times over. Almost always a scope-detection failure
-        // during recording rather than something anyone meant.
-        if (!(step.body || []).some((s) => s.scope === 'item')) {
+        // during recording rather than something anyone meant - except a pure
+        // "scrape this listing" body with only `extract` steps and no click/fill,
+        // which is legitimate and counts as touching the item too.
+        if (!(step.body || []).some((s) => s.scope === 'item' || s.kind === 'extract')) {
           problems.push(`${at}: foreach has no per-item steps - every iteration would do the same thing`);
         }
         walk(step.body, `${at}.`);
@@ -60,6 +62,8 @@ function auditShape(flow) {
         if (looksLikeStrayKeystroke(step)) {
           advisories.push(`${at}: pressing "${step.action.key}" on a ${roleOf(step.selectors[0])} looks like a stray keystroke - consider deleting this step`);
         }
+      } else if (step.kind === 'extract') {
+        if (!step.relativeSelectors?.length) problems.push(`${at}: extract "${step.key}" has no selector candidates`);
       }
     });
   };

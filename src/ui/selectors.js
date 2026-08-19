@@ -183,6 +183,26 @@ function relativeCandidates(el, root) {
   return out;
 }
 
+// --- parent-climb (picker enhancement) --------------------------------------
+//
+// Pure ancestor walk, entirely separate from chooseItem()'s own ancestor search
+// (repeatingLevels) - this is a manual override layered on top of the picker, not a
+// change to how any pick is scored. overlay.js's picker uses it to turn "the user
+// clicked the same element again" into "climb one level further out," for the case
+// where a child and its parent occupy nearly the same screen space and hit-testing
+// (elementFromPoint) can only ever return the innermost one.
+//
+// Stops at <html> rather than climbing into it - <html> is never a usable container,
+// item, or field target.
+function ancestorAt(el, depth) {
+  let node = el;
+  for (let i = 0; i < depth; i += 1) {
+    if (!node || !node.parentElement || node.parentElement.tagName === 'HTML') break;
+    node = node.parentElement;
+  }
+  return node;
+}
+
 // --- choosing the repeating unit -------------------------------------------
 //
 // The hard part. The container the user picks only BOUNDS the search; the repeating

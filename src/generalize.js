@@ -45,11 +45,29 @@ function isOverlayAction(action, prefix) {
 }
 
 // `playright:R:start` -> { kind: 'R', phase: 'start' }
+// `playright:field:pick:Job Title` -> { kind: 'field', phase: 'pick', label: 'Job Title' }
+//
+// Split on the first TWO ':' only, then rejoin whatever remains as one piece. A
+// custom field label is free text the user typed into "+ Field" and may itself
+// contain ':' - splitting unbounded would truncate "Salary: Base" down to "Salary".
+//
+// `label` is only ever present on the returned object for a marker that actually has a
+// third segment (only `field:pick:<key>` does today) - omitted rather than `null` for
+// every other marker, so `{ kind: 'R', phase: 'start' }` stays deepStrictEqual to what
+// it was before this segment existed.
 function parseMarker(action, prefix) {
   const name = nameFilterValue(action?.selector);
   if (!name || !name.startsWith(prefix)) return null;
-  const [kind, phase] = name.slice(prefix.length).split(':');
-  return { kind, phase: phase || null };
+  const rest = name.slice(prefix.length);
+  const firstColon = rest.indexOf(':');
+  if (firstColon === -1) return { kind: rest, phase: null };
+  const kind = rest.slice(0, firstColon);
+  const afterKind = rest.slice(firstColon + 1);
+  const secondColon = afterKind.indexOf(':');
+  if (secondColon === -1) return { kind, phase: afterKind || null };
+  const phase = afterKind.slice(0, secondColon);
+  const label = afterKind.slice(secondColon + 1);
+  return { kind, phase: phase || null, label: label || null };
 }
 
 // Ranked item-selector candidates: the generalized Playwright selector first (most

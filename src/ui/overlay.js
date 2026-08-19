@@ -75,6 +75,7 @@ function installOverlay(config, html, css) {
   const openStrip = shadow.querySelector('[data-pr="open-strip"]');
   const rBtn = shadow.querySelector('[data-pr="r-btn"]');
   const fBtn = shadow.querySelector('[data-pr="f-btn"]');
+  const settingsBtn = shadow.querySelector('[data-pr="settings-btn"]');
 
   // The aria-label IS the accessible name, which is what Playwright's own selector
   // generator keys a role-based locator off - so a press of this button is recorded
@@ -85,6 +86,7 @@ function installOverlay(config, html, css) {
   // actually had.
   rBtn.setAttribute('aria-label', PREFIX + 'R:start');
   fBtn.setAttribute('aria-label', PREFIX + 'F:arm');
+  settingsBtn.setAttribute('aria-label', PREFIX + 'ui:settings');
 
   // `title` is plain human-readable hover copy - independent of aria-label, which
   // must stay byte-identical to the playright:*  marker strings the recorder keys
@@ -100,6 +102,7 @@ function installOverlay(config, html, css) {
   };
   rBtn.title = TITLE_R.closed;
   fBtn.title = TITLE_F.idle;
+  settingsBtn.title = 'Settings (position and orientation)';
 
   function paint(btn, active) {
     btn.classList.toggle('is-active', active);
@@ -162,7 +165,22 @@ function installOverlay(config, html, css) {
       + '.pr-hover-badge{position:fixed;z-index:2147483645;pointer-events:none;'
         + 'background:rgba(255,51,102,.92);color:#fff;'
         + 'font:11px/1.3 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;'
-        + 'font-weight:600;padding:3px 6px;border-radius:4px;white-space:nowrap;display:none;}';
+        + 'font-weight:600;padding:3px 6px;border-radius:4px;white-space:nowrap;display:none;}'
+      + '.pr-settings-panel{position:fixed;z-index:2147483646;background:rgba(17,17,17,.96);'
+        + 'color:#fff;border-radius:8px;padding:12px;box-shadow:0 4px 16px rgba(0,0,0,.35);'
+        + 'font:12px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;'
+        + 'min-width:160px;right:80px;top:12px;}'
+      + '.pr-settings-panel[hidden]{display:none;}'
+      + '.pr-settings-header{margin-bottom:8px;padding-bottom:4px;border-bottom:1px solid rgba(255,255,255,.2);}'
+      + '.pr-settings-title{font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.05em;'
+        + 'color:rgba(255,255,255,.7);}'
+      + '.pr-settings-group{display:flex;flex-direction:column;gap:6px;margin-bottom:12px;}'
+      + '.pr-settings-group:last-child{margin-bottom:0;}'
+      + '.pr-settings-radio{display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none;'
+        + 'padding:4px 6px;border-radius:4px;transition:background-color 120ms ease;}'
+      + '.pr-settings-radio:hover{background-color:rgba(255,255,255,.1);}'
+      + '.pr-settings-radio input[type="radio"]{cursor:pointer;}'
+      + '.pr-settings-radio span{font-size:12px;}';
     document.documentElement.appendChild(chromeStyle);
   }
 
@@ -229,6 +247,53 @@ function installOverlay(config, html, css) {
   let outlined = null;
   let cursorLabel = null;
   let hoverBadge = null;
+
+  // --- parent-climb: manual override on top of the picker, not inside it ------
+  //
+  // Container picks, item picks and field picks all share this one picker mechanism,
+  // and all three can hit the same problem: elementFromPoint() only ever returns the
+  // INNERMOST element under the cursor, so when a child and its parent occupy nearly
+  // the same screen space there is no way to click the parent directly - every click
+  // at that spot keeps landing on the child.
+  //
+  // The fix: clicking the SAME already-selected element again climbs one level up the
+  // ancestor chain (via selectors.js#ancestorAt) instead of re-selecting the same
+  // element. `climbAnchor` is the raw (unclimbed) elementFromPoint() result from the
+  // most recent click; `climbDepth` is how many levels have been climbed FROM that
+  // anchor so far. A click at a genuinely different position never matches the anchor,
+  // so it always resets to a fresh, un-climbed pick - existing single-click flows (every
+  // test recorded before this feature existed) are unaffected byte-for-byte.
+  //
+  // Deliberately NOT reset by openPicker()/closePicker() - those run on every single
+  // pick stage (container, then item, then each field), and resetting there would
+  // erase the climb the moment an error handler re-opens the picker to retry the SAME
+  // stage, which is exactly when the climb matters. It resets only at a genuinely NEW
+  // arm (pressing F from idle, or pressing a field pill) - see resetClimb() call sites
+  // below - and implicitly on navigation, since the whole script (and this closure)
+  // re-runs from scratch on every page load.
+  let climbAnchor = null;
+  let climbDepth = 0;
+
+  function resetClimb() {
+    climbAnchor = null;
+    climbDepth = 0;
+  }
+
+  // Non-mutating preview for the hover badge: "what WOULD a click select right now".
+  // Hovering the anchor position shows the CURRENT climb level (not yet incremented);
+  // hovering anywhere else previews a fresh, un-climbed pick of whatever is there.
+  function climbPeek(rawEl) {
+    if (rawEl === climbAnchor) return ancestorAt(rawEl, climbDepth);
+    return rawEl;
+  }
+
+  // Mutating: called only from the picker's click handler. Advances the climb when the
+  // click lands on the same raw element as last time, else starts a fresh climb at 0.
+  function climbFrom(rawEl) {
+    if (rawEl === climbAnchor) climbDepth += 1;
+    else { climbAnchor = rawEl; climbDepth = 0; }
+    return ancestorAt(rawEl, climbDepth);
+  }
 
   function updateHoverBadge(el) {
     if (!hoverBadge) return;
@@ -306,7 +371,10 @@ function installOverlay(config, html, css) {
       cursorLabel.style.left = e.clientX + 'px';
       cursorLabel.style.top = e.clientY + 'px';
       const el = under(e.clientX, e.clientY);
-      if (!isOurs(el)) outline(el);
+      // Preview only - never mutates climb state. Shows the CLIMBED level when
+      // hovering back over the anchor position, so the badge is what tells the user
+      // they've climbed high enough, without needing to click to find out.
+      if (!isOurs(el)) outline(el ? climbPeek(el) : null);
     });
 
     picker.addEventListener('click', (e) => {
@@ -314,7 +382,7 @@ function installOverlay(config, html, css) {
       e.stopPropagation();
       const el = under(e.clientX, e.clientY);
       closePicker();
-      if (el && !isOurs(el)) onPick(el);
+      if (el && !isOurs(el)) onPick(climbFrom(el));
     }, true);
 
     document.documentElement.appendChild(picker);
@@ -353,6 +421,7 @@ function installOverlay(config, html, css) {
     paint(fBtn, false);
     updateOpenStrip();
     closePicker();
+    updateFieldsVisibility();
   }
 
   function pickParent() {
@@ -397,6 +466,8 @@ function installOverlay(config, html, css) {
       fBtn.title = TITLE_F.body;
       paint(fBtn, true);
       updateOpenStrip();
+      // Only now does a field selector have anything to be relative to.
+      updateFieldsVisibility();
 
       const count = chosen.count;
       // Validated live and shown immediately. A count of 0 or 1, or one that disagrees
@@ -428,7 +499,9 @@ function installOverlay(config, html, css) {
   }
 
   fBtn.addEventListener('click', () => {
-    if (fState === 'idle') { pickParent(); return; }
+    // A fresh arm from idle - not the internal retries pickParent()/pickItem() make on
+    // their own error paths - is what starts a new climb chain from scratch.
+    if (fState === 'idle') { resetClimb(); pickParent(); return; }
     if (fState === 'parent' || fState === 'item') {
       say('F cancelled.', null);
       send({ type: 'F', phase: 'cancel' });
@@ -462,11 +535,243 @@ function installOverlay(config, html, css) {
   // which is what `change` tracks here too.
   document.addEventListener('change', observe, { capture: true, passive: true });
 
+  // --- field extraction (Phase 3.2) --------------------------------------------
+  //
+  // One-shot arm -> pick -> capture, not a toggle: pressing a pill arms picking for
+  // that field, the very next picker click captures it (out-of-band, same as F's
+  // scope pick), and the toolbar falls straight back to idle - ready for the next
+  // field - with no separate "close" gesture the way F needs one. That is also why
+  // the marker only has a `pick` phase (`playright:field:pick:<key>`, see
+  // generalize.js#parseMarker): there is nothing else to name.
+  //
+  // Only meaningful, and only shown, while an F body is open (fState === 'body') - a
+  // field selector is relative to fItem, which does not exist otherwise.
+  const fieldsRow = shadow.querySelector('[data-pr="fields"]');
+  const fieldButtons = Array.from(shadow.querySelectorAll('[data-pr="field-btn"]'));
+  const fieldAddBtn = shadow.querySelector('[data-pr="field-add-btn"]');
+  const fieldCustomWrap = shadow.querySelector('[data-pr="field-custom"]');
+  const fieldInput = shadow.querySelector('[data-pr="field-input"]');
+  const fieldConfirmBtn = shadow.querySelector('[data-pr="field-confirm-btn"]');
+
+  // Fixed pills' aria-labels never change, so - unlike R/F, whose meaning flips on
+  // every press - these are set once, here, rather than in every handler.
+  for (const btn of fieldButtons) {
+    btn.setAttribute('aria-label', PREFIX + 'field:pick:' + btn.dataset.fieldKey);
+  }
+
+  let fieldArmedKey = null;
+
+  function updateFieldsVisibility() {
+    const show = fState === 'body';
+    fieldsRow.hidden = !show;
+    if (!show) {
+      fieldCustomWrap.hidden = true;
+      fieldInput.value = '';
+    }
+  }
+
+  // `instruction` mirrors pickParent/pickItem's cursor-label style. Re-entrant: called
+  // both for a fresh pill press AND by onFieldPick's own error branches to retry the
+  // SAME field - which is deliberate, since a retry at the same screen position is
+  // exactly when parent-climb (see above) needs its state to survive.
+  function armField(key) {
+    fieldArmedKey = key;
+    say('Field "' + key + '": click the value for this item.\n\nThis click will not affect the site.', null);
+    openPicker('Click the ' + key.toUpperCase() + ' value', onFieldPick);
+  }
+
+  function onFieldPick(el) {
+    if (!fItem) {
+      say('Lost track of the current item - press F and re-pick it.', 'bad');
+      fieldArmedKey = null;
+      return;
+    }
+    if (el !== fItem && !fItem.contains(el)) {
+      say('That is not inside the current item.\nClick something inside the highlighted row.\n\n(Clicking the very same spot again climbs to its parent, if you meant the wrapper around it.)', 'bad');
+      armField(fieldArmedKey);
+      return;
+    }
+    const rel = relativeCandidates(el, fItem);
+    if (!rel.length) {
+      say('Could not build a stable selector for that.\nTry a slightly different element, or click the same spot again to climb to its parent.', 'bad');
+      armField(fieldArmedKey);
+      return;
+    }
+    const key = fieldArmedKey;
+    send({ type: 'field', key, rel, tag: el.tagName.toLowerCase(), text: textOf(el) });
+    say('Captured "' + key + '": ' + JSON.stringify(textOf(el) || '').slice(0, 80), 'good');
+    fieldArmedKey = null;
+  }
+
+  for (const btn of fieldButtons) {
+    btn.addEventListener('click', () => {
+      // A pill press is always a NEW arm (never a retry - retries call armField()
+      // directly from onFieldPick), so this is where the climb chain starts fresh.
+      resetClimb();
+      armField(btn.dataset.fieldKey);
+    });
+  }
+
+  fieldAddBtn.addEventListener('click', () => {
+    fieldCustomWrap.hidden = false;
+    fieldInput.value = '';
+    fieldConfirmBtn.setAttribute('aria-label', PREFIX + 'field:pick:');
+    fieldConfirmBtn.disabled = true;
+    fieldInput.focus();
+  });
+
+  // Sets the confirm button's aria-label as the user TYPES, not inside its own click
+  // handler - the marker IS the accessible name Playwright reads off the button at the
+  // moment it is clicked, so it has to already be correct before that click happens,
+  // not mutated by the same event that fires it.
+  fieldInput.addEventListener('input', () => {
+    const label = fieldInput.value.trim();
+    fieldConfirmBtn.setAttribute('aria-label', PREFIX + 'field:pick:' + label);
+    fieldConfirmBtn.disabled = !label;
+  });
+
+  fieldConfirmBtn.addEventListener('click', () => {
+    const label = fieldInput.value.trim();
+    if (!label) return;
+    fieldCustomWrap.hidden = true;
+    resetClimb(); // a custom field's first pick is a new arm too
+    armField(label);
+  });
+
+  // --- settings panel (Phase 3.4) -----------------------------------------------
+  //
+  // Mounted in the page's light DOM (document.documentElement), not the overlay's
+  // shadow root - a transformed ancestor (the toolbar host uses `transform` for its
+  // positioning) becomes the containing block for `position:fixed` descendants, which
+  // would land the panel off-screen. Same reasoning as the toast layer above.
+  //
+  // Built and appended EAGERLY (right here, not lazily on first gear-button click):
+  // unlike the toast layer, which only needs to exist when there is something to say,
+  // this panel's presence-but-hidden state is itself observable (tests, and any real
+  // user peeking at devtools) from the moment the page loads. Lazily creating it left
+  // a window where `[data-pr="settings-panel"]` simply did not exist yet.
+  //
+  // Each radio's aria-label IS its marker (`playright:ui:position:<value>` /
+  // `playright:ui:orientation:<value>`), exactly like the R/F buttons and field pills
+  // above - not the human-readable "Top-Left" text, which stays in the <span> as the
+  // visible (but not accessible-name) label. That is what lets ir.js recognise and
+  // drop the click via the existing `marker.kind === 'ui'` no-op - the actual element
+  // the user (or Playwright) clicks carries the marker directly, so there is no need
+  // for - and no leaked duplicate from - a second synthetic marker click.
+  let settingsPanel = null;
+
+  function initSettingsPanel() {
+    ensureChromeStyle();
+    if (settingsPanel) return;
+
+    settingsPanel = document.createElement('div');
+    settingsPanel.className = 'pr-settings-panel';
+    settingsPanel.setAttribute('data-pr', 'settings-panel');
+    settingsPanel.setAttribute('data-playright-chrome', '');
+    settingsPanel.hidden = true;
+
+    settingsPanel.innerHTML = `
+      <div class="pr-settings-header">
+        <div class="pr-settings-title">Position</div>
+      </div>
+      <div class="pr-settings-group">
+        <label class="pr-settings-radio">
+          <input type="radio" name="position" value="top-right" data-pr="pos-top-right" aria-label="${PREFIX}ui:position:top-right" />
+          <span>Top-Right</span>
+        </label>
+        <label class="pr-settings-radio">
+          <input type="radio" name="position" value="top-left" data-pr="pos-top-left" aria-label="${PREFIX}ui:position:top-left" />
+          <span>Top-Left</span>
+        </label>
+        <label class="pr-settings-radio">
+          <input type="radio" name="position" value="bottom-right" data-pr="pos-bottom-right" aria-label="${PREFIX}ui:position:bottom-right" />
+          <span>Bottom-Right</span>
+        </label>
+        <label class="pr-settings-radio">
+          <input type="radio" name="position" value="bottom-left" data-pr="pos-bottom-left" aria-label="${PREFIX}ui:position:bottom-left" />
+          <span>Bottom-Left</span>
+        </label>
+      </div>
+      <div class="pr-settings-header">
+        <div class="pr-settings-title">Orientation</div>
+      </div>
+      <div class="pr-settings-group">
+        <label class="pr-settings-radio">
+          <input type="radio" name="orientation" value="vertical" data-pr="orient-vertical" aria-label="${PREFIX}ui:orientation:vertical" />
+          <span>Vertical</span>
+        </label>
+        <label class="pr-settings-radio">
+          <input type="radio" name="orientation" value="horizontal" data-pr="orient-horizontal" aria-label="${PREFIX}ui:orientation:horizontal" />
+          <span>Horizontal</span>
+        </label>
+      </div>
+    `;
+    document.documentElement.appendChild(settingsPanel);
+
+    // Set default values
+    settingsPanel.querySelector('[data-pr="pos-top-right"]').checked = true;
+    settingsPanel.querySelector('[data-pr="orient-vertical"]').checked = true;
+
+    // Wire up position and orientation change handlers. The `change` event fires on
+    // the SAME element whose aria-label is the marker, so Playwright's recorder
+    // already captured the right accessible name before this handler even runs.
+    for (const radio of settingsPanel.querySelectorAll('input[name="position"]')) {
+      radio.addEventListener('change', (e) => applyPosition(e.target.value));
+    }
+
+    for (const radio of settingsPanel.querySelectorAll('input[name="orientation"]')) {
+      radio.addEventListener('change', (e) => applyOrientation(e.target.value));
+    }
+  }
+
+  function toggleSettingsPanel() {
+    if (!settingsPanel) initSettingsPanel();
+    settingsPanel.hidden = !settingsPanel.hidden;
+  }
+
+  function applyPosition(position) {
+    const positions = {
+      'top-right': { top: '12px', right: '12px', bottom: 'auto', left: 'auto', transform: 'none' },
+      'top-left': { top: '12px', left: '12px', bottom: 'auto', right: 'auto', transform: 'none' },
+      'bottom-right': { bottom: '12px', right: '12px', top: 'auto', left: 'auto', transform: 'none' },
+      'bottom-left': { bottom: '12px', left: '12px', top: 'auto', right: 'auto', transform: 'none' },
+    };
+
+    if (positions[position]) {
+      const styles = positions[position];
+      host.style.top = styles.top;
+      host.style.right = styles.right;
+      host.style.bottom = styles.bottom;
+      host.style.left = styles.left;
+      host.style.transform = styles.transform;
+    }
+  }
+
+  function applyOrientation(orientation) {
+    if (orientation === 'horizontal') {
+      host.style.flexDirection = 'row';
+    } else {
+      host.style.flexDirection = 'column';
+    }
+  }
+
+  settingsBtn.addEventListener('click', () => {
+    toggleSettingsPanel();
+  });
+
   // --- mount ------------------------------------------------------------------
 
   const mount = () => {
     if (!document.body) return;
     if (!document.getElementById(OVERLAY_ID)) document.body.appendChild(host);
+    // Built (hidden) here rather than deferred to the first gear-button click.
+    // installOverlay() itself runs via addInitScript BEFORE document.documentElement
+    // exists (confirmed: appendChild there throws "Cannot read properties of null"),
+    // which is exactly why mount() itself is deferred to DOMContentLoaded below - so
+    // this piggybacks on that same readiness gate rather than adding a second one.
+    // `[data-pr="settings-panel"]` must be findable-but-hidden as soon as
+    // window.__playright exists, not only after the gear button is first clicked.
+    initSettingsPanel();
   };
 
   window.__playright = {
@@ -510,6 +815,28 @@ function installOverlay(config, html, css) {
         say('Still inside the per-item block.\nSteps here apply to the page (not to one item).\nPress F when done.', null);
       }
       updateOpenStrip();
+      // fItem does not survive a navigation even when fOpen does (see above) - fields
+      // stay hidden in bodyDetached the same as any other non-'body' state.
+      updateFieldsVisibility();
+    },
+
+    // Diagnostic exposed purely for testing the parent-climb mechanism (see
+    // climbFrom/climbPeek above) without needing to drive a full F or field pick
+    // session end to end. Mirrors exactly what the picker's own click handler does at
+    // a given viewport point, using the SAME climb state - so this exercises the real
+    // production code path, not a parallel copy of it.
+    __debugClimbClick(x, y) {
+      const el = document.elementFromPoint(x, y);
+      if (!el) return null;
+      const effective = climbFrom(el);
+      return {
+        tag: effective.tagName.toLowerCase(),
+        id: effective.id || null,
+        depth: climbDepth,
+      };
+    },
+    __debugClimbReset() {
+      resetClimb();
     },
   };
 

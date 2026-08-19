@@ -9,6 +9,7 @@ const { recordSite, sitePaths, countSteps } = require('./record');
 const { verifyFlow } = require('./verify');
 const { runFlow } = require('./interpret');
 const { emitFlow } = require('./emit');
+const { writeOutput } = require('./output');
 const drift = require('./drift');
 const { probeRequiresHeaded } = require('./headless-probe');
 const { logInfo, logWarn, logError } = require('./log');
@@ -44,6 +45,9 @@ Options:
                                  ends logged-out. Off by default - the profile persists
                                  so cookie banners and logins survive between sessions.
   --times <n>                    Override every repeat block's iteration count.
+  --out <path>                   play/verify only. Where to write extracted rows (CSV or
+                                 JSON by extension). Default sites/<id>/output.csv.
+                                 Written only if the flow tags at least one field.
 `);
 }
 
@@ -128,10 +132,15 @@ async function cmdVerify(args) {
   fs.writeFileSync(sitePaths(args.id).flow, JSON.stringify(flow, null, 2));
 
   if (args.times) overrideTimes(flow.steps, args.times);
-  const { ok } = await verifyFlow(flow, {
+  const { ok, stats } = await verifyFlow(flow, {
     headless: args.headless ?? false,
     artifactsDir: sitePaths(args.id).failures,
   });
+
+  const outPath = args.out || path.join(sitePaths(args.id).dir, 'output.csv');
+  const written = writeOutput(outPath, stats.records);
+  if (written) logInfo(`wrote ${stats.records.length} row(s) to ${path.relative(REPO_ROOT, written)}`);
+
   if (!ok) process.exitCode = 1;
 }
 
@@ -155,6 +164,10 @@ async function cmdPlay(args) {
   for (const f of stats.fallbacks) logWarn(`${f.path} ${f.message}`);
   for (const w of stats.warnings) logWarn(`${w.path} ${w.type}: ${w.message}`);
   for (const e of stats.errors) logError(`${e.path} ${e.type}: ${e.message}`);
+
+  const outPath = args.out || path.join(paths.dir, 'output.csv');
+  const written = writeOutput(outPath, stats.records);
+  if (written) logInfo(`wrote ${stats.records.length} row(s) to ${path.relative(REPO_ROOT, written)}`);
 
   const previous = drift.loadPreviousFingerprint(args.id);
   const { status, issues } = drift.classifyDrift(previous, fingerprint);
@@ -218,6 +231,7 @@ async function main() {
       'requires-headed': { type: 'string' },
       'clear-tracking': { type: 'boolean' },
       times: { type: 'string' },
+      out: { type: 'string' },
       help: { type: 'boolean' },
     },
     allowPositionals: true,
@@ -237,6 +251,7 @@ async function main() {
     requiresHeaded: values['requires-headed'] === undefined ? undefined : values['requires-headed'] !== 'false',
     clearTracking: values['clear-tracking'] ?? false,
     times: values.times ? Number(values.times) : undefined,
+    out: values.out,
   };
   if (command !== 'list' && !args.id) throw new Error(`${command} needs --id <id>`);
 

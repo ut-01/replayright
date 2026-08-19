@@ -84,15 +84,29 @@ function emitSteps(steps, indent, itemVar, depth = 0) {
 
     if (step.kind === 'foreach') {
       const nested = depth === 0 ? 'item' : `item${depth + 1}`;
+      const hasFields = (step.body || []).some((s) => s.kind === 'extract');
       lines.push(`${pad}{`);
       lines.push(`${pad}  const parent = page.locator(${q(step.parentSelectors?.[0])});`);
       lines.push(`${pad}  const items = parent.locator(${q(step.itemSelectors?.[0])});`);
       lines.push(`${pad}  const total = await items.count(); // recorded: ${step.expectedCount ?? '?'}`);
       lines.push(`${pad}  for (let i = 0; i < total; i++) {`);
       lines.push(`${pad}    const ${nested} = items.nth(i); // re-resolved every iteration`);
+      if (hasFields) lines.push(`${pad}    const row = {};`);
       lines.push(...emitSteps(step.body, indent + 4, nested, depth + 1));
+      if (hasFields) lines.push(`${pad}    records.push(row);`);
       lines.push(`${pad}  }`);
       lines.push(`${pad}}`);
+      continue;
+    }
+
+    if (step.kind === 'extract') {
+      const list = step.relativeSelectors;
+      const primary = list?.[0];
+      const target = primary === '' ? itemVar : `${itemVar}.locator(${q(primary)})`;
+      lines.push(`${pad}row[${q(step.key)}] = await ${target}.first().innerText().then((t) => t.trim()).catch(() => null);`);
+      if (list && list.length > 1) {
+        lines.push(`${pad}// fallback selectors: ${list.slice(1).map(q).join(', ')}`);
+      }
       continue;
     }
 
@@ -114,10 +128,12 @@ function emitFlow(flow) {
     '(async () => {',
     '  const browser = await chromium.launch({ headless: false });',
     '  const page = await browser.newPage();',
+    '  const records = []; // one row per tagged foreach iteration, if any',
     flow.startUrl ? `  await page.goto(${q(flow.startUrl)});` : '',
     '',
     ...emitSteps(flow.steps, 2, null, 0),
     '',
+    '  console.log(JSON.stringify(records, null, 2));',
     '  await browser.close();',
     '})();',
     '',

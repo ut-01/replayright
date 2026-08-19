@@ -42,6 +42,26 @@ the block.
 
 `F` inside `R` is the normal shape: repeat over pages, foreach over the entries on each page.
 
+### Field extraction: turning the loop into rows
+
+While an `F` body is open, a row of pill buttons appears — **Title**, **Location**,
+**Posted date**, **Description**, and **+ Field** for a custom label. Each is one-shot:
+press it, click the value **inside the current entry**, and it is captured — no toggle,
+no separate "close" press. Press a different pill to capture another field on the same
+entry; nothing is captured until you press one.
+
+If the pick lands outside the entry, or the overlay cannot build it a selector unique to
+that spot, it tells you and re-arms the same field automatically — **click the same spot
+again** and it climbs to that element's parent instead of re-picking the same thing. This
+is also how to fix a plain "wrong element" pick when a wrapper and its content occupy the
+same area on screen: click once, and if the badge shows the wrong level, click the exact
+same spot again to walk outward one level at a time.
+
+Tagged fields become one flat row per entry. `play`/`verify` write them to
+`sites/<id>/output.csv` (or `.json`, by `--out`'s extension) — nothing is written if no
+field was ever tagged. A field that fails to resolve on a given entry writes `null`
+rather than failing the whole run.
+
 ### Opening a detail record inside the loop
 
 Click straight into an entry's detail during the per-entry steps — that is the natural
@@ -83,7 +103,7 @@ match something and now matches nothing. That is the signal to re-record.
 
 ## flow.json reference
 
-Three step kinds, nestable:
+Four step kinds, nestable:
 
 ```jsonc
 { "kind": "action",
@@ -109,8 +129,18 @@ Three step kinds, nestable:
   "itemSelectors": ["..."],          // ranked; candidates are verified by counting at record time
   "expectedCount": 20,               // what was seen while recording; a mismatch warns
   "body": [ ... ] }
+
+{ "kind": "extract",                 // only ever appears directly inside a foreach's body
+  "key": "Title",                    // the pill's label, or whatever you typed into "+ Field"
+  "relativeSelectors": ["..."] }     // relative to the current entry; "" means the entry itself
 ```
 
 Selector candidates are ranked by **robustness, not specificity**. `li.card` is preferred
 over `li.card.sc-9f8a1b`, because a build-generated hash changes on every deploy. Editing
 the order by hand is a legitimate way to harden a flow.
+
+An `extract` step never fails the run: if none of its candidates resolve on a given entry,
+that field is written as `null` for that row rather than aborting. `play`/`verify` collect
+one row per foreach iteration and write them to `sites/<id>/output.csv` by default
+(`--out <path>` to choose the path/format; `.json` writes a JSON array instead) — only if
+at least one field was tagged anywhere in the flow.

@@ -39,6 +39,10 @@ function newStats() {
     warnings: [],
     errors: [],
     steps: [],
+    // One flat object per foreach iteration that tagged at least one field (see
+    // runExtract / runForeach below). Rows from every nested repeat/foreach share this
+    // single list - output.js turns it into CSV/JSON.
+    records: [],
   };
 }
 
@@ -257,6 +261,52 @@ async function runAction(step, ctx) {
   }
 }
 
+// A field pick has nothing sensible to fail INTO - "the page changed and this field
+// is gone" is routine on a listing (a card without a location, a job with no posted
+// date), not a reason to abort a run that is otherwise working. So this never throws:
+// an unresolved candidate list writes null onto the row and is reported as a warning,
+// never as an error that counts against the consecutive-failure budget.
+async function runExtract(step, ctx) {
+  if (!ctx.item) {
+    // Malformed flow (extract outside any foreach) - ir.js never produces this, but a
+    // hand-edited flow.json could. Still don't throw; there's simply nothing to read.
+    if (ctx.record) ctx.record[step.key] = null;
+    note(ctx, 'warnings', { type: 'extract-outside-foreach', message: `field "${step.key}" is not inside a foreach; writing null` });
+    return;
+  }
+
+  const selectors = step.relativeSelectors && step.relativeSelectors.length ? step.relativeSelectors : [''];
+
+  try {
+    const { locator, selector, candidateIndex } = await candidates.resolve(ctx.item, selectors, {
+      what: `field "${step.key}"`,
+      onFallback: onFallbackFor(ctx),
+      // locator.count() does not auto-wait (see candidates.js); poll against the same
+      // shared deadline every other resolution in this file uses.
+      waitMs: ctx.opts.resolveWaitMs,
+    });
+    // `.first()` deliberately, not `preferUnique` - a field is read, not acted on, so an
+    // ambiguous match (e.g. a wrapping label plus its child span both matching) is fine
+    // to just read the first of; failing the whole row over it would be the wrong trade.
+    const text = (await locator.first().innerText()).trim();
+    if (ctx.record) ctx.record[step.key] = text;
+    // Counted as a "step executed" the same as an action - a flow that ONLY extracts
+    // fields (no click/fill) is a legitimate shape, and `actions === 0` is what both
+    // verify.js and cli.js's `play` treat as "nothing happened, fail the run"; without
+    // this a field-only flow would never be able to pass verification no matter how
+    // many rows it correctly scraped.
+    ctx.stats.actions += 1;
+    ctx.stats.steps.push({ path: ctx.path, kind: 'extract', key: step.key, selector, candidateIndex, status: 'ok' });
+  } catch (err) {
+    if (ctx.record) ctx.record[step.key] = null;
+    note(ctx, 'warnings', {
+      type: 'extract-unresolved',
+      message: `field "${step.key}" could not be resolved; writing null (${err.message.split('\n')[0]})`,
+    });
+    ctx.stats.steps.push({ path: ctx.path, kind: 'extract', key: step.key, status: 'null' });
+  }
+}
+
 async function runRepeat(step, ctx) {
   const times = Math.min(step.times ?? REPEAT_DEFAULT_TIMES, HARD_LOOP_CEILING);
   const settleSelector = step.settle?.selector;
@@ -337,6 +387,15 @@ async function runForeach(step, ctx) {
 
   logInfo(`${ctx.path}foreach: ${total} item(s) via ${JSON.stringify(first.selector)}`);
 
+  // Pre-seed every iteration's row with the flow's own field keys, in the order they
+  // were tagged. This is what keeps CSV columns consistent even when a step earlier in
+  // the body fails and aborts the rest of the iteration before every extract step runs -
+  // the fields that never got reached simply stay null instead of the row missing keys
+  // other rows have. `null` when there are no extract steps at all in this body: nothing
+  // to accumulate, so no row is pushed per iteration below.
+  const fieldKeys = (step.body || []).filter((s) => s.kind === 'extract').map((s) => s.key);
+  const hasFields = fieldKeys.length > 0;
+
   // A "Load More" advance control appends to the SAME list rather than replacing it
   // with a new page - without this, every repeat iteration would re-walk the items
   // already visited on top of whatever just got appended. Detected by comparing this
@@ -386,6 +445,11 @@ async function runForeach(step, ctx) {
     // Shared by reference so a step can hand the detail tab to the steps after it.
     // Per-iteration, so one item's tab can never leak into the next.
     iterCtx.detailRef = { page: null, ownTab: false };
+    // One row per iteration, pre-seeded with every field this foreach tags so the
+    // column set stays identical across rows even when the body errors out partway
+    // through (see the comment above `fieldKeys`). `null` foreach (no extract steps
+    // anywhere in the body) - nothing accumulates and nothing is pushed below.
+    iterCtx.record = hasFields ? Object.fromEntries(fieldKeys.map((k) => [k, null])) : null;
 
     try {
       await runSteps(step.body, iterCtx);
@@ -400,6 +464,10 @@ async function runForeach(step, ctx) {
       if (iterCtx.detailRef.ownTab) {
         await iterCtx.detailRef.page.close().catch(() => {});
       }
+      // Pushed regardless of whether the iteration succeeded - a row with some fields
+      // still null (because the body errored before reaching them) is more useful to a
+      // caller than a silently missing row.
+      if (iterCtx.record) ctx.stats.records.push(iterCtx.record);
     }
   }
 
@@ -432,6 +500,9 @@ async function runSteps(steps, ctx) {
       case 'action':
         await runAction(step, stepCtx);
         ctx.stats.consecutiveErrors = 0;
+        break;
+      case 'extract':
+        await runExtract(step, stepCtx);
         break;
       case 'repeat':
         await runRepeat(step, stepCtx);

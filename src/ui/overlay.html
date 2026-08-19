@@ -33,4 +33,41 @@
     <span class="pr-btn-icon" aria-hidden="true">&#9638;</span>
     <span class="pr-btn-label">F</span>
   </button>
+  <button type="button" class="pr-btn pr-btn--settings" data-pr="settings-btn">
+    <span class="pr-btn-icon" aria-hidden="true">&#9881;</span>
+    <span class="pr-btn-label">⚙</span>
+  </button>
+</div>
+
+<!--
+  Field-pick pills (Phase 3.2). One-shot arm -> pick -> capture, not a toggle: pressing
+  a pill arms picking for that field, the very next picker click captures it, and the
+  toolbar returns to this row ready for the next field. `hidden` by default - overlay.js
+  only reveals this row while an F body is actually open (fState === 'body'), since a
+  field selector has nothing to be relative to otherwise; JS toggles the attribute
+  rather than a class so an idle toolbar has nothing extra painted.
+
+  aria-label is set at mount time in overlay.js (not baked in here), same reasoning as
+  the R/F buttons above - it IS the marker `playright:field:pick:<key>` Playwright's own
+  selector generator reads back out of the recorded click.
+-->
+<div class="pr-fields" data-pr="fields" hidden>
+  <button type="button" class="pr-pill" data-pr="field-btn" data-field-key="Title">Title</button>
+  <button type="button" class="pr-pill" data-pr="field-btn" data-field-key="Location">Location</button>
+  <button type="button" class="pr-pill" data-pr="field-btn" data-field-key="Posted date">Posted date</button>
+  <button type="button" class="pr-pill" data-pr="field-btn" data-field-key="Description">Description</button>
+  <button type="button" class="pr-pill pr-pill--add" data-pr="field-add-btn">+ Field</button>
+</div>
+
+<!--
+  Custom field label entry, shown only after "+ Field" is pressed. A plain text input
+  rather than window.prompt(): a native dialog can't be scripted through the picker's own
+  click machinery the same way, and typing here (via the 'input' listener in overlay.js)
+  lets the confirm button's aria-label be set BEFORE it is ever clicked - i.e. before
+  Playwright's recorder reads its accessible name - rather than mutated inside the click
+  handler that fires the very action being recorded.
+-->
+<div class="pr-field-custom" data-pr="field-custom" hidden>
+  <input type="text" class="pr-field-input" data-pr="field-input" placeholder="Field name" autocomplete="off" />
+  <button type="button" class="pr-pill" data-pr="field-confirm-btn" disabled>Add</button>
 </div>

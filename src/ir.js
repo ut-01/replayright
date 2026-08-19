@@ -37,6 +37,17 @@ function splitOverlayEvents(events) {
   return blocks;
 }
 
+// Field picks (Phase 3.2) resolve to one outcome in one instant - the picker swallows
+// the click, computes a relative selector against the current item, and sends it
+// out-of-band right then. There is no arm/close pairing to reconstruct (unlike F's
+// scope/bodyEvent split above), so a plain in-order queue is enough: each `field:pick:*`
+// marker seen in the action stream claims the next entry here.
+function splitFieldEvents(events) {
+  return events
+    .filter((event) => event.type === 'field')
+    .map((event) => ({ rel: event.rel || [], tag: event.tag || null, text: event.text || null }));
+}
+
 const norm = (s) => (s || '').toLowerCase().replace(/\s+/g, ' ').trim();
 
 // Does this overlay-observed event plausibly describe the same interaction as this
@@ -159,7 +170,10 @@ function finalizeForeach(block, warnings) {
   const itemSelectors = rankItemCandidates({ recordedItemSelector, structural: block.__structuralItems });
   for (const step of block.body) delete step.__absoluteSelector;
 
-  if (!block.body.some((s) => s.scope === 'item')) {
+  // A foreach that only reads fields (no per-item click/fill) is a legitimate shape -
+  // a pure "scrape this listing" flow with nothing to act on - so an `extract` step
+  // counts as "does something per item" here alongside an item-scoped action.
+  if (!block.body.some((s) => s.scope === 'item' || s.kind === 'extract')) {
     // With more than one item, a foreach whose body never touches the item would do the
     // same thing N times. Almost always a scope-detection failure rather than intent.
     warnings.push({
@@ -206,6 +220,8 @@ function buildFlow({ siteId, startUrl, actionLog, overlayEvents }) {
   const warnings = [];
   const scopeBlocks = splitOverlayEvents(overlayEvents);
   let nextScopeBlock = 0;
+  const fieldEvents = splitFieldEvents(overlayEvents);
+  let nextFieldEvent = 0;
 
   const rootSteps = [];
   const stack = [{ kind: 'root', body: rootSteps }];
@@ -269,6 +285,44 @@ function buildFlow({ siteId, startUrl, actionLog, overlayEvents }) {
         continue;
       }
 
+      if (marker.kind === 'field' && marker.phase === 'pick') {
+        const open = top();
+        // A field selector has nothing to be relative to outside a foreach body - the
+        // in-page toolbar already hides the field buttons unless one is open, but a
+        // hand-edited action log or a race during recording could still get here.
+        if (open.kind !== 'foreach') {
+          warnings.push({
+            type: 'field-outside-foreach',
+            message: `field "${marker.label}" was picked outside a foreach body; ignored`,
+          });
+          continue;
+        }
+        const payload = fieldEvents[nextFieldEvent];
+        if (!payload) {
+          warnings.push({
+            type: 'field-without-pick',
+            message: `field "${marker.label}" was armed but no pick was captured; skipped`,
+          });
+          continue;
+        }
+        nextFieldEvent += 1;
+        if (!payload.rel.length) {
+          warnings.push({
+            type: 'field-unaddressable',
+            message: `field "${marker.label}" could not be given a stable selector; skipped`,
+          });
+          continue;
+        }
+        open.body.push({ kind: 'extract', key: marker.label, relativeSelectors: payload.rel });
+        continue;
+      }
+
+      if (marker.kind === 'ui') {
+        // Settings panel markers (Phase 3.4) are UI configuration noise, not replayable steps.
+        // Silently dropped: position, orientation, settings clicks all fall here.
+        continue;
+      }
+
       // `pick` and anything else recorded against the overlay: noise, dropped.
       continue;
     }
@@ -327,4 +381,4 @@ function buildFlow({ siteId, startUrl, actionLog, overlayEvents }) {
   };
 }
 
-module.exports = { buildFlow, splitOverlayEvents, looksLikeSameTarget };
+module.exports = { buildFlow, splitOverlayEvents, splitFieldEvents, looksLikeSameTarget };

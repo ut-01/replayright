@@ -1,0 +1,36 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Parent-climb fixture</title>
+  <style>#results{padding:24px;list-style:none;margin:0} li.card{padding:8px;margin:4px 0;border:1px solid #ddd}</style>
+</head>
+<body>
+  <h1>Climb fixture</h1>
+  <!--
+    Two repeating cards, so F's item-pick (chooseItem) works normally - climbing is not
+    needed for THAT pick, only for what happens inside the first card's per-item body.
+
+    Card 1 deliberately contains two structurally IDENTICAL nested branches
+    (div.wrap > span.dup, twice, no id/testid anywhere) so that clicking the inner span
+    cannot be given a unique relative selector at all: every self-candidate
+    ("span", "span.dup") and every ancestor-chain candidate ("div.wrap > span.dup")
+    matches BOTH branches. That forces relativeCandidates() to genuinely fail - not a
+    contrived error - which is what exercises the picker's real retry path
+    (onFieldPick -> armField(key) again) that parent-climb depends on to survive a
+    same-key retry. Climbing from the span (depth 0, ambiguous) to div.wrap (depth 1,
+    still ambiguous) to li.card itself (depth 2, the item root - always addressable via
+    the empty relative selector) is the only way this field can ever be tagged.
+  -->
+  <ul id="results">
+    <li class="card" id="card-1">
+      <div class="wrap"><span class="dup">Duplicate A</span></div>
+      <div class="wrap"><span class="dup">Duplicate A</span></div>
+    </li>
+    <li class="card" id="card-2">
+      <div class="wrap"><span class="dup">Duplicate B</span></div>
+      <div class="wrap"><span class="dup">Duplicate B</span></div>
+    </li>
+  </ul>
+</body>
+</html>

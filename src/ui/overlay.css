@@ -167,3 +167,91 @@
 .pr-btn.is-active:hover {
   background: var(--pr-accent);
 }
+
+/* Field-pick pills (Phase 3.2) - a compact row under R/F, shown only while an F body
+   is open (see overlay.js's updateFieldsVisibility()). `[hidden]` rather than a class
+   toggle for the same "idle toolbar paints nothing extra" reasoning as .pr-open-strip
+   above. */
+.pr-fields {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px;
+  max-width: 160px;
+}
+
+.pr-fields[hidden] {
+  display: none;
+}
+
+.pr-pill {
+  border: 1px solid var(--pr-accent-f);
+  background: var(--pr-bg);
+  color: var(--pr-accent-f);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font: 11px/1.3 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: var(--pr-shadow);
+  transition: background-color 120ms ease, color 120ms ease, transform 120ms ease;
+}
+
+.pr-pill:hover {
+  background: var(--pr-accent-f-tint);
+  transform: translateY(-1px);
+}
+
+.pr-pill:active {
+  background: var(--pr-accent-f);
+  color: #fff;
+  transform: translateY(0);
+}
+
+.pr-pill:focus-visible {
+  outline: 2px solid var(--pr-accent-f);
+  outline-offset: 2px;
+}
+
+.pr-pill:disabled {
+  opacity: .45;
+  cursor: default;
+}
+
+.pr-pill--add {
+  border-style: dashed;
+}
+
+.pr-field-custom {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.pr-field-custom[hidden] {
+  display: none;
+}
+
+.pr-field-input {
+  width: 100px;
+  border: 1px solid var(--pr-muted);
+  border-radius: 4px;
+  background: var(--pr-bg);
+  color: var(--pr-fg);
+  font: 11px/1.3 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  padding: 4px 6px;
+}
+
+.pr-field-input:focus-visible {
+  outline: 2px solid var(--pr-accent-f);
+  outline-offset: 1px;
+}
+
+/* Settings button styling (Phase 3.4) */
+.pr-btn--settings {
+  --pr-accent: var(--pr-accent-f);
+  --pr-accent-tint: var(--pr-accent-f-tint);
+}
+
+/* Settings panel (Phase 3.4) - mounted in light DOM, styled here via ensureChromeStyle */
