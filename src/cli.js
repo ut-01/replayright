@@ -12,7 +12,8 @@ const { emitFlow } = require('./emit');
 const { writeOutput, toCsv, toJson } = require('./output');
 const drift = require('./drift');
 const { probeRequiresHeaded } = require('./headless-probe');
-const { logInfo, logWarn, logError } = require('./log');
+const { logInfo, logWarn, logError, setLogFormat, setLogSiteId, EVENT } = require('./log');
+const { buildRunRecord, writeRunRecord } = require('./run-record');
 const { CHROMIUM_ARGS } = require('./constants');
 const { ensureDisplay } = require('./display');
 const { loadConfig, resolveOutputPath, resolveOutputFormat, resolveSitesDir, defaults, CONFIG_FILENAME } = require('./config');
@@ -65,6 +66,12 @@ Options:
   --no-sandbox                   play/verify only. Disable Chromium sandbox (required
                                  when running as root in containers, but is an attack
                                  surface otherwise). Opt-in flag.
+  --log <text|json>              Log output format. "text" (default) is today's
+                                 human-readable "[iso] message" line. "json" is one JSON
+                                 object per line (NDJSON) - level/ts/siteId/event/path/
+                                 message - for a machine consumer. play/verify also write
+                                 a per-run sites/<id>/runs/<iso>.json report regardless
+                                 of this flag.
 `);
 }
 
@@ -163,12 +170,12 @@ async function withPage(headless, fn, displayArgs = {}, extraArgs = []) {
 async function resolveRequiresHeaded(flow, args, config) {
   if (args.requiresHeaded !== undefined) {
     flow.requiresHeaded = args.requiresHeaded;
-    logInfo(`requiresHeaded set explicitly via --requires-headed=${args.requiresHeaded}`);
+    logInfo(`requiresHeaded set explicitly via --requires-headed=${args.requiresHeaded}`, { event: EVENT.REQUIRES_HEADED_RESOLVED });
     return;
   }
   const probe = await probeRequiresHeaded(flow.startUrl, { timeoutMs: config?.timeouts?.probeMs });
   flow.requiresHeaded = probe.requiresHeaded;
-  logInfo(`headless capability: ${probe.reason} -> requiresHeaded=${probe.requiresHeaded}`);
+  logInfo(`headless capability: ${probe.reason} -> requiresHeaded=${probe.requiresHeaded}`, { event: EVENT.REQUIRES_HEADED_RESOLVED });
 }
 
 async function cmdRecord(args) {
@@ -177,6 +184,7 @@ async function cmdRecord(args) {
   // No flow exists yet, so this is defaults -> file -> env -> CLI; the flow.config layer
   // simply has nothing to contribute for a fresh recording.
   const config = loadConfig({ cwd: process.cwd(), cliOverrides: { sitesDir: args.sitesDir }, cliArgs: args });
+  setLogFormat(config.log.format);
   const resolvedSitesDir = resolveSitesDir(config);
 
   // Recording is always headed - it needs a real Chromium window for the R/F buttons to
@@ -226,13 +234,17 @@ async function cmdRecord(args) {
 }
 
 async function cmdVerify(args) {
-  const config = loadConfig({ cwd: process.cwd(), cliOverrides: { sitesDir: args.sitesDir } });
+  const startedAt = new Date();
+  const runStart = Date.now();
+  const config = loadConfig({ cwd: process.cwd(), cliOverrides: { sitesDir: args.sitesDir, log: { format: args.log } } });
+  setLogFormat(config.log.format);
   const resolvedSitesDir = resolveSitesDir(config);
   const flow = loadFlow(args.id, resolvedSitesDir);
 
   // Loaded AFTER the flow so flow.json's own `config` key (per-site tuning a human wrote
   // down by hand) takes part as the flow.config layer, one step under CLI flags.
   const configWithCliArgs = loadConfig({ cwd: process.cwd(), flow, cliOverrides: { sitesDir: args.sitesDir }, cliArgs: args });
+  setLogFormat(configWithCliArgs.log.format);
 
   // Resolved and persisted BEFORE any `--times` override below - that override is a
   // one-off smoke-run convenience and must never leak into the saved flow.json.
@@ -256,19 +268,33 @@ async function cmdVerify(args) {
     });
 
     const written = writeConfiguredOutput(configWithCliArgs, args.id, stats.records);
-    if (written) logInfo(`wrote ${stats.records.length} row(s) to ${path.relative(process.cwd(), written)}`);
+    if (written) logInfo(`wrote ${stats.records.length} row(s) to ${path.relative(process.cwd(), written)}`, { event: EVENT.OUTPUT_WRITTEN, path: written });
 
     if (!ok) process.exitCode = 1;
+
+    writeRunRecord(sitePaths(args.id, resolvedSitesDir).dir, buildRunRecord({
+      command: 'verify',
+      siteId: args.id,
+      startedAt,
+      durationMs: Date.now() - runStart,
+      exitCode: process.exitCode || 0,
+      stats,
+      outputPath: written,
+    }));
   } finally {
     displayHandle.dispose();
   }
 }
 
 async function cmdPlay(args) {
-  const config = loadConfig({ cwd: process.cwd(), cliOverrides: { sitesDir: args.sitesDir } });
+  const startedAt = new Date();
+  const runStart = Date.now();
+  const config = loadConfig({ cwd: process.cwd(), cliOverrides: { sitesDir: args.sitesDir, log: { format: args.log } } });
+  setLogFormat(config.log.format);
   const resolvedSitesDir = resolveSitesDir(config);
   const flow = loadFlow(args.id, resolvedSitesDir);
   const configWithCliArgs = loadConfig({ cwd: process.cwd(), flow, cliOverrides: { sitesDir: args.sitesDir }, cliArgs: args });
+  setLogFormat(configWithCliArgs.log.format);
 
   if (args.times) overrideTimes(flow.steps, args.times);
   if (!flow.verified) logWarn('this flow has never passed verification; run `verify --id ' + args.id + '` before trusting it');
@@ -284,23 +310,23 @@ async function cmdPlay(args) {
     return { stats: runStats, fingerprint: await drift.captureFingerprint(page, flow, runStats) };
   }, { display: configWithCliArgs.display.mode, screen: configWithCliArgs.display.screen }, configWithCliArgs.browser.args);
 
-  logInfo(`done: ${stats.actions} action(s), ${stats.repeatIterations} repeat iteration(s), ${stats.foreachIterations} item(s)`);
-  for (const f of stats.fallbacks) logWarn(`${f.path} ${f.message}`);
-  for (const w of stats.warnings) logWarn(`${w.path} ${w.type}: ${w.message}`);
-  for (const e of stats.errors) logError(`${e.path} ${e.type}: ${e.message}`);
+  logInfo(`done: ${stats.actions} action(s), ${stats.repeatIterations} repeat iteration(s), ${stats.foreachIterations} item(s)`, { event: EVENT.PLAY_COMPLETED });
+  for (const f of stats.fallbacks) logWarn(`${f.path} ${f.message}`, { event: EVENT.STEP_FALLBACK, path: f.path });
+  for (const w of stats.warnings) logWarn(`${w.path} ${w.type}: ${w.message}`, { event: EVENT.STEP_WARNING, path: w.path });
+  for (const e of stats.errors) logError(`${e.path} ${e.type}: ${e.message}`, { event: EVENT.STEP_FAILED, path: e.path });
 
   const written = writeConfiguredOutput(configWithCliArgs, args.id, stats.records);
-  if (written) logInfo(`wrote ${stats.records.length} row(s) to ${path.relative(process.cwd(), written)}`);
+  if (written) logInfo(`wrote ${stats.records.length} row(s) to ${path.relative(process.cwd(), written)}`, { event: EVENT.OUTPUT_WRITTEN, path: written });
 
   const previous = drift.loadPreviousFingerprint(args.id, resolvedSitesDir);
   const { status, issues } = drift.classifyDrift(previous, fingerprint);
 
   if (status === 'OK') {
-    logInfo(`drift check: OK ${JSON.stringify(fingerprint.selectorCounts)}`);
+    logInfo(`drift check: OK ${JSON.stringify(fingerprint.selectorCounts)}`, { event: EVENT.DRIFT_OK });
   } else {
     const log = status === 'BROKEN' ? logError : logWarn;
-    log(`drift check: ${status}`);
-    for (const issue of issues) log(`  [${issue.severity}] ${issue.reason}`);
+    log(`drift check: ${status}`, { event: EVENT.DRIFT_DETECTED });
+    for (const issue of issues) log(`  [${issue.severity}] ${issue.reason}`, { event: EVENT.DRIFT_DETECTED });
   }
 
   if (!drift.saveFingerprint(args.id, fingerprint, status, resolvedSitesDir)) {
@@ -314,10 +340,26 @@ async function cmdPlay(args) {
   const structural = stats.errors.filter((e) => e.type === 'SELECTOR_UNRESOLVED').length;
   if (structural) logError(`${structural} step(s) could not resolve any selector candidate`);
   if (status === 'BROKEN' || stats.aborted || structural > 0 || stats.actions === 0) process.exitCode = 1;
+
+  // Mandatory per Phase 6.1: one sites/<id>/runs/<iso>.json per `play` run, so a cloud
+  // agent can read what happened without scraping stdout. Never allowed to become a new
+  // failure mode itself - writeRunRecord() degrades to a warning on its own.
+  writeRunRecord(paths.dir, buildRunRecord({
+    command: 'play',
+    siteId: args.id,
+    startedAt,
+    durationMs: Date.now() - runStart,
+    exitCode: process.exitCode || 0,
+    stats,
+    driftStatus: status,
+    driftIssues: issues,
+    outputPath: written,
+  }));
 }
 
 function cmdEmit(args) {
-  const config = loadConfig({ cwd: process.cwd(), cliOverrides: { sitesDir: args.sitesDir } });
+  const config = loadConfig({ cwd: process.cwd(), cliOverrides: { sitesDir: args.sitesDir, log: { format: args.log } } });
+  setLogFormat(config.log.format);
   const resolvedSitesDir = resolveSitesDir(config);
   const flow = loadFlow(args.id, resolvedSitesDir);
   const out = path.join(sitePaths(args.id, resolvedSitesDir).dir, 'flow.js');
@@ -326,7 +368,8 @@ function cmdEmit(args) {
 }
 
 function cmdList(args) {
-  const config = loadConfig({ cwd: process.cwd(), cliOverrides: { sitesDir: args.sitesDir } });
+  const config = loadConfig({ cwd: process.cwd(), cliOverrides: { sitesDir: args.sitesDir, log: { format: args.log } } });
+  setLogFormat(config.log.format);
   const sitesDir = resolveSitesDir(config);
   if (!fs.existsSync(sitesDir)) return logInfo('no sites recorded yet');
   const entries = fs.readdirSync(sitesDir, { withFileTypes: true })
@@ -478,10 +521,18 @@ async function main() {
       'disable-dev-shm-usage': { type: 'boolean' },
       'disable-gpu': { type: 'boolean' },
       'no-sandbox': { type: 'boolean' },
+      log: { type: 'string' },
       help: { type: 'boolean' },
     },
     allowPositionals: true,
   });
+
+  // Best-effort, ahead of config.js even being loaded: a raw --log=json on the command
+  // line should already apply to an "unknown command" or arg-parsing error below. Each
+  // command's own loadConfig() call re-applies setLogFormat() once config.log.format is
+  // fully resolved (file/env/flow.config/CLI merged), which is authoritative when this
+  // flag is absent but a config file or env var still asks for json.
+  if (values.log !== undefined) setLogFormat(values.log);
 
   if (values.help || !command) { usage(); process.exitCode = command ? 0 : 1; return; }
   if (!COMMANDS.includes(command)) { logError(`unknown command "${command}"`); usage(); process.exitCode = 1; return; }
@@ -510,8 +561,13 @@ async function main() {
     // --no-sandbox is a security tradeoff: required when running as root in containers,
     // but it disables a genuine sandbox escape protection otherwise. Never default it on.
     noSandbox: values['no-sandbox'] ?? false,
+    log: values.log,
   };
   if (command !== 'init' && command !== 'list' && !args.id) throw new Error(`${command} needs --id <id>`);
+
+  // siteId context for json log lines from here on, even for commands (emit/list) that
+  // don't get a run-record. Set as early as the id is actually known.
+  if (args.id) setLogSiteId(args.id);
 
   if (command === 'record') return cmdRecord(args);
   if (command === 'play') return cmdPlay(args);

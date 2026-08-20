@@ -15,7 +15,7 @@ const fs = require('fs');
 const path = require('path');
 const { chromium } = require('playwright');
 const candidates = require('./candidates');
-const { sleep, randomDelay, logInfo, logWarn, logError } = require('./log');
+const { sleep, randomDelay, logInfo, logWarn, logError, EVENT } = require('./log');
 const {
   REPEAT_DEFAULT_TIMES,
   HARD_LOOP_CEILING,
@@ -114,11 +114,22 @@ async function waitForTextChange(page, selector, previousText, timeoutMs, ctx) {
   });
 }
 
+// bucket -> the vocabulary tag it's reported under in json log mode. Kept as one small
+// map rather than scattering event choices across call sites, so every warning/error/
+// fallback pushed onto stats gets the same tag whether it came from an action, an
+// extract, a foreach, or a repeat.
+const BUCKET_EVENT = {
+  fallbacks: EVENT.STEP_FALLBACK,
+  errors: EVENT.STEP_FAILED,
+  warnings: EVENT.STEP_WARNING,
+};
+
 function note(ctx, bucket, entry) {
   ctx.stats[bucket].push({ path: ctx.path, ...entry });
   const message = entry.message || entry.reason || entry.type;
-  if (bucket === 'errors') logError(`${ctx.path}: ${message}`);
-  else logWarn(`${ctx.path}: ${message}`);
+  const meta = { event: BUCKET_EVENT[bucket] || EVENT.GENERIC, path: ctx.path };
+  if (bucket === 'errors') logError(`${ctx.path}: ${message}`, meta);
+  else logWarn(`${ctx.path}: ${message}`, meta);
 }
 
 function onFallbackFor(ctx) {
@@ -209,7 +220,7 @@ async function runAction(step, ctx) {
   if (!isItemScoped && ctx.repeatExit && selectors?.includes(ctx.repeatExit.selector)) {
     const { gone, reason } = await candidates.isGoneOrDisabled(ctx.page, ctx.repeatExit.selector);
     if (gone) {
-      logInfo(`${ctx.path}skipping the loop-advance action - ${reason}`);
+      logInfo(`${ctx.path}skipping the loop-advance action - ${reason}`, { path: ctx.path });
       ctx.repeatExit.done = true;
       return;
     }
@@ -342,7 +353,7 @@ async function runRepeat(step, ctx) {
     ctx.stats.repeatIterations += 1;
 
     if (repeatExit?.done) {
-      logInfo(`${ctx.path}repeat: stopping after ${i + 1} iteration(s) - nothing left to advance to`);
+      logInfo(`${ctx.path}repeat: stopping after ${i + 1} iteration(s) - nothing left to advance to`, { path: ctx.path });
       break;
     }
 
@@ -390,7 +401,7 @@ async function runForeach(step, ctx) {
     return;
   }
 
-  logInfo(`${ctx.path}foreach: ${total} item(s) via ${JSON.stringify(first.selector)}`);
+  logInfo(`${ctx.path}foreach: ${total} item(s) via ${JSON.stringify(first.selector)}`, { path: ctx.path });
 
   // Pre-seed every iteration's row with the flow's own field keys, in the order they
   // were tagged. This is what keeps CSV columns consistent even when a step earlier in
@@ -421,7 +432,7 @@ async function runForeach(step, ctx) {
   }
 
   if (startIndex >= total) {
-    logInfo(`${ctx.path}foreach: no new items since last time (still ${total}) - nothing to do this round`);
+    logInfo(`${ctx.path}foreach: no new items since last time (still ${total}) - nothing to do this round`, { path: ctx.path });
   }
 
   for (let i = startIndex; i < total; i += 1) {

@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "Record a browser flow once, mark its loops, replay it every day",
+  "main": "index.js",
   "bin": {
     "replayright": "src/cli.js"
   },

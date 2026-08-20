@@ -614,6 +614,9 @@ function configFromCliArgs(args = {}) {
     output: {
       path: args.out,
     },
+    log: {
+      format: args.log,
+    },
   };
 }
 

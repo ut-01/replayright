@@ -11,7 +11,7 @@
 // selector. Surviving on a fallback is a pass for a daily run but a fail for a fresh
 // recording, because it means the selector we would have chosen is already wrong.
 const { runFlow } = require('./interpret');
-const { logInfo, logWarn, logError } = require('./log');
+const { logInfo, logWarn, logError, EVENT } = require('./log');
 
 // Roles whose elements a single printable keystroke plausibly belongs to.
 const EDITABLE_ROLES = new Set(['textbox', 'searchbox', 'combobox', 'spinbutton']);
@@ -73,7 +73,7 @@ function auditShape(flow) {
 }
 
 function printReport({ shapeProblems, advisories, stats }) {
-  logInfo('--- verification report ---');
+  logInfo('--- verification report ---', { event: EVENT.VERIFY_REPORT });
 
   for (const problem of shapeProblems) logWarn(`shape: ${problem}`);
   for (const advisory of advisories) logWarn(`advisory: ${advisory}`);

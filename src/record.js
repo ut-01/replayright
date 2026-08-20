@@ -26,7 +26,7 @@ const { buildOverlayScript } = require('./ui-bundle');
 const { buildFlow } = require('./ir');
 const { isOverlayAction, parseMarker } = require('./generalize');
 const { MARKER_PREFIX, CHROMIUM_ARGS } = require('./constants');
-const { logInfo, logWarn, logError } = require('./log');
+const { logInfo, logWarn, logError, EVENT } = require('./log');
 const { clearTrackingData } = require('./profile');
 const { ensureDisplay } = require('./display');
 
@@ -297,7 +297,7 @@ async function recordSession({ siteId, url, drive, headless, viewport, clearTrac
       await context.close().catch(() => {});
     }
   } else {
-    logInfo('Recording. Use the R and F buttons on the right-hand side of the browser window.');
+    logInfo('Recording. Use the R and F buttons on the right-hand side of the browser window.', { event: EVENT.RECORDING_STARTED });
     logInfo('  R  press once to open a repeat block, again to close it.');
     logInfo('  F  press once, then click the container, then one item. Everything after that repeats per item.');
     logInfo('Close the browser window when the flow is complete.');
@@ -317,7 +317,7 @@ async function recordSession({ siteId, url, drive, headless, viewport, clearTrac
   fs.writeFileSync(paths.actions, JSON.stringify({ actionLog, overlayEvents }, null, 2));
   fs.writeFileSync(paths.flow, JSON.stringify(flow, null, 2));
 
-  logInfo(`Recorded ${actionLog.length} raw action(s) -> ${countSteps(flow.steps)} replayable step(s).`);
+  logInfo(`Recorded ${actionLog.length} raw action(s) -> ${countSteps(flow.steps)} replayable step(s).`, { event: EVENT.RECORDING_COMPLETED });
   logInfo(`Wrote ${path.relative(REPO_ROOT, paths.flow)}`);
   for (const warning of warnings) logWarn(`${warning.type}: ${warning.message}`);
   if (!flow.steps.length) logError('Nothing replayable was recorded.');
