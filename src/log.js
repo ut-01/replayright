@@ -52,6 +52,9 @@ function randomDelay(minMs = MIN_DELAY_MS, maxMs = MAX_DELAY_MS) {
 //   drift-ok                        drift check passed
 //   drift-detected                   drift check came back WARNING or BROKEN
 //   run-record-write-failed          writing sites/<id>/runs/<iso>.json itself failed
+//   run-batch-started                run --all: the site list has been resolved, about to start
+//   run-site-completed               run --all: one site's play() finished (or threw)
+//   run-batch-completed              run --all: every site has been attempted
 //
 const EVENT = {
   GENERIC: 'generic',
@@ -68,6 +71,9 @@ const EVENT = {
   DRIFT_OK: 'drift-ok',
   DRIFT_DETECTED: 'drift-detected',
   RUN_RECORD_WRITE_FAILED: 'run-record-write-failed',
+  RUN_BATCH_STARTED: 'run-batch-started',
+  RUN_SITE_COMPLETED: 'run-site-completed',
+  RUN_BATCH_COMPLETED: 'run-batch-completed',
 };
 
 let logFormat = 'text';

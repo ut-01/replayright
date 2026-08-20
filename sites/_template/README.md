@@ -106,6 +106,48 @@ for, a tracking cookie that changes what the site serves — can silently affect
 subsequent recording or replay until someone notices and clears it by hand (or sets
 `clearTracking: true`, or `persist: false` for a clean slate every time).
 
+## Batch running many sites: `run --all` and `tags`
+
+```
+npm run run -- --all                       # play every recorded site
+npm run run -- --all --tag=daily            # play only sites tagged "daily"
+npm run run -- --all --concurrency=3        # up to 3 sites' play() at once
+```
+
+`run --all` calls the exact same `play` every site would get from `play --id=<id>` - one
+Xvfb/browser/drift/run-record cycle per site - and never lets one site's failure (even a
+thrown exception, e.g. a corrupt `flow.json`) stop the others: the batch always attempts
+every matching site, and the process exits non-zero only if at least one of them did.
+
+`--tag=<name>` filters which sites run, by an optional top-level `tags` array in
+`flow.json`:
+
+```jsonc
+{ "startUrl": "...", "steps": [...],
+  "tags": ["daily", "jobs"] }
+```
+
+**Nothing writes this array automatically** - same as `flow.config` (see below), it is
+hand-added by whoever decides a site belongs in a given scheduled batch. No `--tag` means
+"run every recorded site", tagged or not.
+
+`--concurrency=<n>` (default `1`, i.e. sequential) bounds how many sites' `play()` run at
+once. Raising it trades wall-clock time for two things worth knowing before you do:
+
+- Each concurrent site is a full extra Chromium (and, for a `requiresHeaded` site, its own
+  Xvfb) - pick a number your machine can actually hold in memory at once.
+- With more than one site genuinely in flight, the *step-level* log lines that come from
+  deep inside a site's own `play()` run (`interpret.js`/`drift.js`) can be attributed to
+  the wrong `siteId` in a `--log=json` stream, because those call sites rely on a
+  process-wide "current site" rather than passing `siteId` explicitly. This is a known,
+  documented limitation, not an oversight - fixing it means threading `siteId` through
+  every log call inside `interpret.js`/`drift.js`, which is out of scope for what added
+  batch running. It does **not** affect correctness: each site's own
+  `sites/<id>/runs/<iso>.json` report and `run --all`'s own per-site summary line are both
+  attributed correctly regardless of concurrency (both carry `siteId` explicitly). Use
+  `--concurrency=1` if exact per-line attribution in a machine-read log stream matters more
+  than wall-clock time.
+
 ## Then
 
 ```

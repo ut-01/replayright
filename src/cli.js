@@ -17,9 +17,16 @@ const { buildRunRecord, writeRunRecord } = require('./run-record');
 const { CHROMIUM_ARGS, EXIT_CODE } = require('./constants');
 const { ensureDisplay } = require('./display');
 const { loadConfig, resolveOutputPath, resolveOutputFormat, resolveSitesDir, defaults, CONFIG_FILENAME } = require('./config');
+// index.js's play() - the same orchestration `play --id=<id>` runs (config resolution,
+// Xvfb setup, drift capture, run-record writing) - reused as-is for each site `run --all`
+// touches, rather than re-implemented here. See index.js's own header comment for why it
+// is a deliberate, parallel copy of cli.js's *helpers* but never the other way around;
+// this is the one place cli.js reaches back into index.js, and only for the finished
+// per-site function, never for index.js's internal helpers.
+const { play: playSite } = require('../index');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
-const COMMANDS = ['record', 'play', 'verify', 'emit', 'list', 'init'];
+const COMMANDS = ['record', 'play', 'verify', 'emit', 'list', 'init', 'run'];
 
 function usage() {
   console.log(`playRight - record a web flow once, replay it every day.
@@ -38,6 +45,14 @@ Usage: node src/cli.js <command> [options]
   init                           Scaffold a replayright.config.json in the current
                                  directory with all defaults and explanations.
   list                           List recorded sites.
+  run --all                      Batch-play every recorded site (or every site matching
+                                 --tag). Reuses the exact same play() each site would get
+                                 from play --id=<id> - one Xvfb/browser/drift/run-record
+                                 cycle per site. One site's failure (a thrown error, not
+                                 just a non-zero exit) never aborts the batch; the
+                                 aggregate process exit is 0 only if every site succeeded.
+                                 Prints a per-site summary line and a final "N/M site(s)
+                                 succeeded" line.
 
 Options:
   --headless[=true|false]        Default: false for record/verify; for play, true unless
@@ -55,6 +70,15 @@ Options:
                                  JSON by extension). Default sites/<id>/output.csv.
                                  Written only if the flow tags at least one field.
   --sites-dir <path>             Where per-site recordings live. Default ./sites.
+  --all                          run only. Required - batch-plays every recorded site
+                                 (subject to --tag). Reserved so a future "run --id=<id>"
+                                 has room without a breaking change.
+  --concurrency <n>              run only. How many sites' play() run at once. Default 1
+                                 (sequential) - see the note on --log=json below for why.
+  --tag <name>                   run only. Only play sites whose flow.json has <name> in
+                                 a top-level "tags" array, e.g. "tags": ["daily"]. Nothing
+                                 writes this array automatically; add it by hand. Omit
+                                 --tag to run every recorded site.
   --display <auto|off|:N>        How to get a real X display for a headed browser on a
                                  Linux box with no DISPLAY (e.g. an unattended cloud
                                  runner). "auto" (default) starts a scoped Xvfb on a free
@@ -73,7 +97,19 @@ Options:
                                  object per line (NDJSON) - level/ts/siteId/event/path/
                                  message - for a machine consumer. play/verify also write
                                  a per-run sites/<id>/runs/<iso>.json report regardless
-                                 of this flag.
+                                 of this flag. NOTE: with run --all --concurrency > 1,
+                                 log lines emitted from deep inside one site's play() run
+                                 (interpret.js/drift.js step-level lines) do not carry an
+                                 explicit siteId and fall back to whichever site's play()
+                                 most recently called setLogSiteId() - with several sites
+                                 genuinely running at once those lines can show the wrong
+                                 siteId. This command's own per-site summary line and
+                                 every sites/<id>/runs/<iso>.json report ARE correctly
+                                 attributed regardless of concurrency (both carry siteId
+                                 explicitly, never through that global). Use
+                                 --concurrency=1 (the default) if exact per-line siteId
+                                 attribution in a --log=json stream matters more than
+                                 wall-clock time.
 `);
 }
 
@@ -397,6 +433,184 @@ function cmdList(args) {
   }
 }
 
+// Same directory scan cmdList uses (deliberately re-walked rather than calling index.js's
+// list() a second time): a --tag filter needs each site's full flow.json anyway (the
+// `tags` array isn't part of list()'s summary), so this reads flow.json once per site and
+// gets both the id list and the tag check out of that one read, instead of one pass via
+// list() for ids and a second pass here for tags.
+//
+// A site whose flow.json fails to parse is INCLUDED when no --tag was given (run --all
+// with no filter means "attempt every recorded site", corrupt flow.json and all - that
+// failure is exactly what runOneSite()'s try/catch below exists to catch and report
+// without aborting the batch) and EXCLUDED when a --tag filter is active, since a file
+// that can't even be parsed obviously can't be shown to contain the requested tag.
+function enumerateSitesForRun(sitesDir, tag) {
+  if (!fs.existsSync(sitesDir)) return [];
+  const entries = fs.readdirSync(sitesDir, { withFileTypes: true })
+    .filter((e) => e.isDirectory() && e.name !== '_template')
+    .filter((e) => fs.existsSync(path.join(sitesDir, e.name, 'flow.json')));
+
+  const ids = [];
+  for (const entry of entries) {
+    if (!tag) {
+      ids.push(entry.name);
+      continue;
+    }
+    try {
+      const flow = JSON.parse(fs.readFileSync(path.join(sitesDir, entry.name, 'flow.json'), 'utf8'));
+      if (Array.isArray(flow.tags) && flow.tags.includes(tag)) ids.push(entry.name);
+    } catch {
+      // Unreadable flow.json can't be shown to carry the requested tag - skip it silently
+      // here; an untagged run (no --tag) would still have included it and hit the same
+      // parse error inside play() itself, where it's reported per-site instead.
+    }
+  }
+  return ids;
+}
+
+// Maps `run --all`'s own args onto the same options shape index.js's play() (via
+// configOverridesFrom, see index.js's header) already accepts for a single `play --id=x`
+// - deliberately narrow: only the flags run --all itself exposes (sitesDir, headless,
+// times, out, display, screen, log, and the three opt-in Chromium args) flow through to
+// each site. browserArgs is built the same way config.js's configFromCliArgs() builds it
+// for a single play - `undefined` (not `[]`) when no disable flag was passed, so an empty
+// array here never OUTRANKS a site's own browser.args set via replayright.config.json or
+// flow.config (config.js's CLI layer wins over both, and an array REPLACES rather than
+// merges - see config.js's mergeLayer comment).
+function playOptionsForRunAll(siteId, args) {
+  const browserArgs = [];
+  if (args.disableDevShmUsage) browserArgs.push('--disable-dev-shm-usage');
+  if (args.disableGpu) browserArgs.push('--disable-gpu');
+  if (args.noSandbox) browserArgs.push('--no-sandbox');
+
+  return {
+    siteId,
+    sitesDir: args.sitesDir,
+    headless: args.headless,
+    times: args.times,
+    out: args.out,
+    display: args.display,
+    screen: args.screen,
+    browserArgs: browserArgs.length ? browserArgs : undefined,
+    logFormat: args.log,
+  };
+}
+
+// A hand-rolled concurrency-limited pool, not a library: N "runner" loops share one
+// cursor into `items` and each pulls the next index as soon as it's free, so slot N+1
+// starts the instant slot N's site finishes rather than waiting for a whole batch of N to
+// land together (a naive chunked-batches-of-N approach would let one slow site hold up
+// results that are otherwise ready). Order of `results` matches `items`, not completion
+// order, so the printed summary reads top-to-bottom the same way regardless of timing.
+async function runWithConcurrency(items, limit, worker) {
+  const results = new Array(items.length);
+  let cursor = 0;
+  async function runner() {
+    for (;;) {
+      const i = cursor++;
+      if (i >= items.length) return;
+      results[i] = await worker(items[i], i);
+    }
+  }
+  const runners = Array.from({ length: Math.min(Math.max(1, limit), items.length) }, runner);
+  await Promise.all(runners);
+  return results;
+}
+
+// One entry's brief, human-readable failure reason for the per-site summary line - not
+// the full stats/drift detail (that already lives in sites/<id>/runs/<iso>.json and in
+// the per-step log lines play() itself emits), just enough to see WHY at a glance.
+function describeExitCode(exitCode) {
+  switch (exitCode) {
+    case EXIT_CODE.DRIFT_BROKEN: return 'drift BROKEN';
+    case EXIT_CODE.SELECTOR_UNRESOLVED: return 'selector unresolved';
+    case EXIT_CODE.ABORTED: return 'aborted mid-run';
+    case EXIT_CODE.ZERO_ACTIONS: return 'zero actions ran';
+    default: return exitCode === EXIT_CODE.OK ? null : `exit code ${exitCode}`;
+  }
+}
+
+// Runs one site's play() and never lets it throw past this point - "one site's failure
+// never aborts the batch" (PLAN.md) means a genuine exception (corrupt flow.json, Xvfb
+// failing to start for just this one site, an id that turns out not to exist) has to be
+// caught HERE, not just a non-zero exitCode in play()'s normal return. Both paths reduce
+// to the same { siteId, exitCode, ok, error } shape so the summary/aggregation logic
+// below doesn't need to know which one happened.
+async function runOneSiteForBatch(siteId, args) {
+  try {
+    const result = await playSite(playOptionsForRunAll(siteId, args));
+    return { siteId, exitCode: result.exitCode, ok: result.ok, error: null };
+  } catch (err) {
+    return { siteId, exitCode: 1, ok: false, error: err.message };
+  }
+}
+
+// run --all [--concurrency=N] [--tag=<tag>] - Phase 6.2. Batch-plays every recorded site
+// (or every site whose flow.json lists --tag) by calling index.js's play() once per site -
+// the exact same function `play --id=<id>` uses, config resolution/Xvfb/drift/run-record
+// writing included - never re-implemented here. See runOneSiteForBatch's comment for why
+// a thrown exception is caught per-site rather than allowed to end the batch, and the
+// module-level EVENT/--log help text above for the one known concurrency caveat
+// (per-line siteId attribution inside play()'s own step-level log lines, not anything
+// that affects run-record.json or this command's own summary).
+async function cmdRun(args) {
+  if (!args.all) {
+    throw new Error('run needs --all (the only mode Phase 6.2 implements) - usage: run --all [--concurrency=N] [--tag=<tag>]');
+  }
+
+  const config = loadConfig({ cwd: process.cwd(), cliOverrides: { sitesDir: args.sitesDir, log: { format: args.log } } });
+  setLogFormat(config.log.format);
+  const resolvedSitesDir = resolveSitesDir(config);
+
+  const siteIds = enumerateSitesForRun(resolvedSitesDir, args.tag);
+  const concurrency = Math.max(1, Number.isFinite(args.concurrency) ? args.concurrency : 1);
+
+  if (!siteIds.length) {
+    logWarn(
+      args.tag
+        ? `no recorded sites tagged "${args.tag}" under ${resolvedSitesDir}`
+        : `no recorded sites under ${resolvedSitesDir}`
+    );
+    // Nothing matched is not the same as something failing - there is nothing to fail.
+    // (Compare cmdList, which also treats an empty sites dir as informational, not an error.)
+    process.exitCode = 0;
+    return;
+  }
+
+  logInfo(
+    `run --all: ${siteIds.length} site(s)${args.tag ? ` tagged "${args.tag}"` : ''}, concurrency=${concurrency}`,
+    { event: EVENT.RUN_BATCH_STARTED }
+  );
+
+  // Concurrency > 1 means several play() calls are genuinely in flight at once, not just
+  // queued - see the --log help text above for exactly what that does and doesn't affect.
+  // Said once per batch, not per site, and only when it's actually relevant.
+  if (concurrency > 1) {
+    logWarn(
+      `--concurrency=${concurrency}: step-level log lines from inside each site's play() run `
+      + `(interpret.js/drift.js) do not carry an explicit siteId and can show the wrong one while `
+      + `sites run in parallel - see 'node src/cli.js --help' for details. This command's own `
+      + `per-site summary line and every sites/<id>/runs/<iso>.json report are unaffected.`
+    );
+  }
+
+  const results = await runWithConcurrency(siteIds, concurrency, (siteId) => runOneSiteForBatch(siteId, args));
+
+  let succeeded = 0;
+  for (const r of results) {
+    if (r.exitCode === 0) succeeded++;
+    const reason = r.error || describeExitCode(r.exitCode);
+    const line = `${r.siteId}: exit=${r.exitCode}${reason ? ` (${reason})` : ''}`;
+    const meta = { event: EVENT.RUN_SITE_COMPLETED, siteId: r.siteId, exitCode: r.exitCode };
+    if (r.exitCode === 0) logInfo(line, meta);
+    else logError(line, meta);
+  }
+
+  logInfo(`run --all: ${succeeded}/${results.length} site(s) succeeded`, { event: EVENT.RUN_BATCH_COMPLETED });
+
+  process.exitCode = succeeded === results.length ? 0 : 1;
+}
+
 function cmdInit() {
   const configPath = path.join(process.cwd(), CONFIG_FILENAME);
   if (fs.existsSync(configPath)) {
@@ -531,6 +745,9 @@ async function main() {
       'disable-gpu': { type: 'boolean' },
       'no-sandbox': { type: 'boolean' },
       log: { type: 'string' },
+      all: { type: 'boolean' },
+      concurrency: { type: 'string' },
+      tag: { type: 'string' },
       help: { type: 'boolean' },
     },
     allowPositionals: true,
@@ -571,11 +788,19 @@ async function main() {
     // but it disables a genuine sandbox escape protection otherwise. Never default it on.
     noSandbox: values['no-sandbox'] ?? false,
     log: values.log,
+    // run --all only.
+    all: values.all ?? false,
+    concurrency: values.concurrency ? Number(values.concurrency) : undefined,
+    tag: values.tag,
   };
-  if (command !== 'init' && command !== 'list' && !args.id) throw new Error(`${command} needs --id <id>`);
+  if (command !== 'init' && command !== 'list' && command !== 'run' && !args.id) {
+    throw new Error(`${command} needs --id <id>`);
+  }
 
   // siteId context for json log lines from here on, even for commands (emit/list) that
-  // don't get a run-record. Set as early as the id is actually known.
+  // don't get a run-record. Set as early as the id is actually known. `run` has no single
+  // id of its own - each site it touches sets this itself via play() - so it is
+  // deliberately left unset here.
   if (args.id) setLogSiteId(args.id);
 
   if (command === 'record') return cmdRecord(args);
@@ -584,6 +809,7 @@ async function main() {
   if (command === 'emit') return cmdEmit(args);
   if (command === 'init') return cmdInit();
   if (command === 'list') return cmdList(args);
+  if (command === 'run') return cmdRun(args);
 }
 
 main().catch((err) => {
