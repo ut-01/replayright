@@ -22,9 +22,28 @@ const MARKER_PREFIX = 'playright:';
 // replay behaviour.
 const CHROMIUM_ARGS = ['--no-default-browser-check', '--disable-session-crashed-bubble'];
 
+// `play`'s exit-code contract (Phase 6.3) - this is what a scheduled job branches on,
+// so the codes themselves are as load-bearing as MARKER_PREFIX and must not be
+// renumbered once something depends on them. `play` already exits non-zero (1) in each
+// of these cases per CLAUDE.md; this just makes WHICH case distinguishable without
+// parsing stdout. Checked in this priority order when more than one applies at once
+// (matching the order CLAUDE.md's contract itself lists them in) - the first match
+// wins, since a run that both drifted BROKEN and also happened to run zero actions is
+// more usefully reported as "drifted" than as "empty".
+const EXIT_CODE = {
+  OK: 0,
+  DRIFT_BROKEN: 10, // drift.classifyDrift() returned BROKEN
+  SELECTOR_UNRESOLVED: 11, // >=1 step error was type SELECTOR_UNRESOLVED - the site changed
+  ABORTED: 13, // a fatal error stopped the run before it reached the end of the flow
+  ZERO_ACTIONS: 12, // the run completed but performed zero actions - almost always a
+  // sign the flow no longer matches the page, just without a specific SELECTOR_UNRESOLVED
+  // to point at (e.g. every step's candidates.resolve() timed out silently).
+};
+
 module.exports = {
   MARKER_PREFIX,
   CHROMIUM_ARGS,
+  EXIT_CODE,
 
   // Default iteration count for an "R" (repeat) block, and its hard cap. A repeat
   // block's real early exit is `untilGone` (stop once the control its body clicks

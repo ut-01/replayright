@@ -27,7 +27,7 @@ const drift = require('./src/drift');
 const { probeRequiresHeaded } = require('./src/headless-probe');
 const { setLogFormat, setLogSiteId } = require('./src/log');
 const { buildRunRecord, writeRunRecord } = require('./src/run-record');
-const { CHROMIUM_ARGS } = require('./src/constants');
+const { CHROMIUM_ARGS, EXIT_CODE } = require('./src/constants');
 const { ensureDisplay } = require('./src/display');
 const { loadConfig, resolveOutputPath, resolveOutputFormat, resolveSitesDir } = require('./src/config');
 
@@ -341,12 +341,18 @@ async function play(options = {}) {
   const { status: driftStatus, issues: driftIssues } = drift.classifyDrift(previous, fingerprint);
   const fingerprintSaved = drift.saveFingerprint(siteId, fingerprint, driftStatus, resolvedSitesDir);
 
-  // Same exit-worthy conditions as cli.js's cmdPlay, returned as data instead of
-  // process.exitCode: a selector that resolved to nothing is always worth failing on,
-  // even on the very first run when there is no drift baseline yet.
+  // Same conditions AND the same distinct codes as cli.js's cmdPlay (Phase 6.3,
+  // src/constants.js#EXIT_CODE), returned as data instead of process.exitCode - a
+  // library consumer branching on `exitCode` should see identical values to a CLI
+  // caller branching on the process's real exit code. Checked in the same priority
+  // order: the first match wins when more than one condition applies at once.
   const structuralErrors = stats.errors.filter((e) => e.type === 'SELECTOR_UNRESOLVED').length;
-  const ok = !(driftStatus === 'BROKEN' || stats.aborted || structuralErrors > 0 || stats.actions === 0);
-  const exitCode = ok ? 0 : 1;
+  let exitCode = EXIT_CODE.OK;
+  if (driftStatus === 'BROKEN') exitCode = EXIT_CODE.DRIFT_BROKEN;
+  else if (structuralErrors > 0) exitCode = EXIT_CODE.SELECTOR_UNRESOLVED;
+  else if (stats.aborted) exitCode = EXIT_CODE.ABORTED;
+  else if (stats.actions === 0) exitCode = EXIT_CODE.ZERO_ACTIONS;
+  const ok = exitCode === EXIT_CODE.OK;
 
   const runRecordPath = writeRunRecord(paths.dir, buildRunRecord({
     command: 'play',

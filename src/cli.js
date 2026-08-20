@@ -14,7 +14,7 @@ const drift = require('./drift');
 const { probeRequiresHeaded } = require('./headless-probe');
 const { logInfo, logWarn, logError, setLogFormat, setLogSiteId, EVENT } = require('./log');
 const { buildRunRecord, writeRunRecord } = require('./run-record');
-const { CHROMIUM_ARGS } = require('./constants');
+const { CHROMIUM_ARGS, EXIT_CODE } = require('./constants');
 const { ensureDisplay } = require('./display');
 const { loadConfig, resolveOutputPath, resolveOutputFormat, resolveSitesDir, defaults, CONFIG_FILENAME } = require('./config');
 
@@ -30,7 +30,9 @@ Usage: node src/cli.js <command> [options]
                                  mark loops, then close the window. The recording is
                                  replayed immediately to verify it.
   play   --id <id>               Replay from the configured sites directory. Exits
-                                 non-zero if the drift check reports BROKEN.
+                                 non-zero with a distinct code: 10 drift BROKEN, 11 a
+                                 selector could not resolve, 12 zero actions ran, 13
+                                 aborted mid-run. See README's "Exit codes" section.
   verify --id <id>               Replay and report, without updating the fingerprint.
   emit   --id <id>               Write a readable .js view of the flow (debug only).
   init                           Scaffold a replayright.config.json in the current
@@ -339,7 +341,14 @@ async function cmdPlay(args) {
   // their own.
   const structural = stats.errors.filter((e) => e.type === 'SELECTOR_UNRESOLVED').length;
   if (structural) logError(`${structural} step(s) could not resolve any selector candidate`);
-  if (status === 'BROKEN' || stats.aborted || structural > 0 || stats.actions === 0) process.exitCode = 1;
+
+  // Distinct, documented exit codes (Phase 6.3, src/constants.js#EXIT_CODE) so an
+  // unattended caller can branch on WHY a run failed without parsing stdout. Checked in
+  // the same priority order CLAUDE.md's contract lists them in - the first match wins.
+  if (status === 'BROKEN') process.exitCode = EXIT_CODE.DRIFT_BROKEN;
+  else if (structural > 0) process.exitCode = EXIT_CODE.SELECTOR_UNRESOLVED;
+  else if (stats.aborted) process.exitCode = EXIT_CODE.ABORTED;
+  else if (stats.actions === 0) process.exitCode = EXIT_CODE.ZERO_ACTIONS;
 
   // Mandatory per Phase 6.1: one sites/<id>/runs/<iso>.json per `play` run, so a cloud
   // agent can read what happened without scraping stdout. Never allowed to become a new

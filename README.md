@@ -131,16 +131,18 @@ docker run --rm replayright:latest play --id=example --disable-gpu=false
 
 ### Exit codes
 
-Scheduled jobs rely on the exit code contract. The `play` command (and `verify`) exit
-non-zero on any of:
+Scheduled jobs rely on the exit code contract. `play` exits non-zero on any of the cases
+below, each with its own distinct code (`src/constants.js#EXIT_CODE`) so a caller can
+branch on *why* a run failed without parsing stdout. When more than one applies at once,
+the first match (top to bottom) wins:
 
-- **`BROKEN` drift check**: the flow's selectors or structure have changed significantly
-  enough that the run is no longer trustworthy. The previous fingerprint is held (not
-  updated), so the job remains in a broken state until fixed.
-- **`SELECTOR_UNRESOLVED`**: a step could not resolve any of its selector candidates —
-  the site changed structurally, and the flow cannot proceed.
-- **`aborted`**: the run stopped early due to consecutive failures exceeding the error
-  budget (`MAX_CONSECUTIVE_ERRORS`, default 3).
-- **Zero actions ran**: the flow executed no steps at all (usually a startup failure).
+| Code | Meaning |
+|-----:|---|
+| `10` | **`BROKEN` drift check** — the flow's selectors or structure have changed significantly enough that the run is no longer trustworthy. The previous fingerprint is held (not updated), so the job stays in a broken state until fixed. |
+| `11` | **`SELECTOR_UNRESOLVED`** — a step could not resolve any of its selector candidates; the site changed structurally and the flow could not proceed. |
+| `13` | **Aborted** — the run stopped early due to consecutive failures exceeding the error budget (`MAX_CONSECUTIVE_ERRORS`, default 3). |
+| `12` | **Zero actions ran** — the flow executed no steps at all (usually a startup failure). |
+| `0`  | Success — the fingerprint is updated with the new counts. |
 
-On success, the exit code is 0 and the fingerprint is updated with the new counts.
+`verify` uses plain `0`/`1`, since it never touches the fingerprint and is meant for a
+human reading the per-step report, not an automated branch.
