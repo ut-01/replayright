@@ -12,6 +12,27 @@
 // ensureDisplay() manages its own Xvfb child rather than shelling out to `xvfb-run`,
 // because self-managing means we know the exact display number we picked and can kill
 // exactly that process in dispose() - `xvfb-run -a` hides both from us.
+//
+// SHARING ACROSS CONCURRENT/SEQUENTIAL CALLS IN ONE PROCESS (`run --all`):
+// Multiple headed Chromium instances can legitimately share one X display at once - that
+// is normal X11 behaviour, not a hack. So rather than trying to give every call its own
+// isolated display (which would mean never touching the shared process.env.DISPLAY, and
+// threading a per-launch env override through every chromium.launch() call site instead),
+// this module runs ONE Xvfb per process for 'auto' mode and reference-counts callers:
+// - The first 'auto' call in the process spawns Xvfb and becomes the owner.
+// - Every subsequent 'auto' call, while that Xvfb is still up, joins it (refCount++) and
+//   gets a dispose() that only decrements - the process is torn down only once every
+//   joiner has disposed.
+// - A concurrent SECOND call that arrives while the first is still spawning (still
+//   resolving findFreeDisplayNumber/spawnXvfb/waitForSocket) awaits that same in-flight
+//   spawn instead of racing to start its own Xvfb - `run --all --concurrency>1` is
+//   exactly this shape, N sites all calling ensureDisplay() nearly simultaneously.
+// Without this, two concurrent callers could each see DISPLAY unset, each spawn their own
+// Xvfb, and stamp over each other's `process.env.DISPLAY`; or the FIRST site to finish and
+// dispose could kill the Xvfb a second, still-running site's browser is actively using.
+// An explicit ':N' request is a deliberate, narrow pinning use case and is NOT shared -
+// it always spawns/owns/disposes independently, on the assumption a caller asking for a
+// specific number is not expecting it to be silently handed to someone else too.
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
@@ -104,26 +125,9 @@ function killDetached(child) {
   }
 }
 
-// mode: 'auto' | 'off' | ':N' (explicit display number, e.g. ':50').
-// screen: Xvfb's `-screen 0` spec, e.g. '1920x1080x24'.
-//
-// Returns { display, dispose }. `dispose()` is always safe to call - including on every
-// no-op path - so callers can put it in one unconditional `finally` alongside closing
-// the browser, rather than tracking whether Xvfb was actually spawned.
-async function ensureDisplay({ mode = 'auto', screen = '1920x1080x24' } = {}) {
-  if (mode === 'off') return noopHandle();
-
-  // Guard defensively even though deciding whether to call this at all (e.g. "we're
-  // running headless, skip it") is the caller's job - a caller that calls us anyway
-  // when DISPLAY is already usable, or on a platform where Xvfb makes no sense, should
-  // still get an inert handle rather than a spawn attempt.
-  if (process.env.DISPLAY) return noopHandle();
-  if (process.platform !== 'linux') return noopHandle();
-
-  const displayNumber = mode === 'auto' || mode === undefined
-    ? findFreeDisplayNumber()
-    : parseDisplayNumber(mode);
-
+// Actually spawns Xvfb on a free display number and waits for it to come up. Shared by
+// both the 'auto' owner path and the ':N' explicit path below.
+async function spawnAndWait(displayNumber, screen) {
   let child;
   try {
     child = await spawnXvfb(displayNumber, screen);
@@ -145,25 +149,130 @@ async function ensureDisplay({ mode = 'auto', screen = '1920x1080x24' } = {}) {
       + `${SOCKET_POLL_TIMEOUT_MS}ms of starting on display :${displayNumber}.`
     );
   }
+  return child;
+}
 
-  const display = `:${displayNumber}`;
-  process.env.DISPLAY = display;
+// Module-level state for the 'auto'-mode shared owner (see the file header comment).
+// `owner` is null when nothing is currently spawned; while spawning, `spawning` holds
+// the in-flight promise so a second concurrent 'auto' call joins it instead of racing.
+let owner = null; // { display, child, refCount }
+let spawning = null;
 
-  let disposed = false;
-  const dispose = () => {
-    if (disposed) return;
-    disposed = true;
-    killDetached(child);
+// Unconditional teardown, regardless of how many joiners still hold a reference - the
+// only thing a process-exit/signal handler is allowed to do. A ref-counted decrement
+// here would leave Xvfb orphaned on SIGTERM whenever more than one site's `play()` was
+// still using it (refCount > 1), which is exactly the "orphaned Xvfb per cron run" leak
+// Phase 4.1 exists to prevent - registered ONCE per owner lifetime (see call site below),
+// not once per joiner, so it only ever needs to force-kill once.
+function forceOwnerTeardown() {
+  if (!owner) return;
+  killDetached(owner.child);
+  if (process.env.DISPLAY === owner.display) delete process.env.DISPLAY;
+  owner = null;
+}
+
+// A single joiner's own graceful dispose(): decrements the shared refCount and only
+// actually tears down once every joiner (owner included) has disposed. Each call to
+// ownerDispose() returns an independent, idempotent-per-caller closure.
+function ownerDispose() {
+  let disposedThisCall = false;
+  return () => {
+    if (disposedThisCall) return;
+    disposedThisCall = true;
+    if (!owner) return; // already fully torn down (forced, or the last joiner beat us to it)
+    owner.refCount -= 1;
+    if (owner.refCount > 0) return;
+    forceOwnerTeardown();
   };
+}
 
-  // An orphaned Xvfb per cron run is a real leak on a long-lived box: register the same
-  // dispose on every path that could end the process without the caller's own `finally`
-  // ever running (an uncaught exception elsewhere, Ctrl-C, `kill`).
-  process.on('exit', dispose);
-  process.on('SIGINT', dispose);
-  process.on('SIGTERM', dispose);
+// mode: 'auto' | 'off' | ':N' (explicit display number, e.g. ':50').
+// screen: Xvfb's `-screen 0` spec, e.g. '1920x1080x24'.
+//
+// Returns { display, dispose }. `dispose()` is always safe to call - including on every
+// no-op path - so callers can put it in one unconditional `finally` alongside closing
+// the browser, rather than tracking whether Xvfb was actually spawned.
+async function ensureDisplay({ mode = 'auto', screen = '1920x1080x24' } = {}) {
+  if (mode === 'off') return noopHandle();
 
-  return { display, dispose };
+  // An explicit ':N' request never joins the shared 'auto' owner (see file header) -
+  // resolve it the simple, independent way it always has been.
+  if (mode !== 'auto' && mode !== undefined) {
+    // Guarded defensively even though deciding whether to call this at all is the
+    // caller's job - a caller that calls us anyway when DISPLAY is already usable, or on
+    // a platform where Xvfb makes no sense, should still get an inert handle.
+    if (process.env.DISPLAY) return noopHandle();
+    if (process.platform !== 'linux') return noopHandle();
+
+    const displayNumber = parseDisplayNumber(mode);
+    const child = await spawnAndWait(displayNumber, screen);
+    const display = `:${displayNumber}`;
+    process.env.DISPLAY = display;
+
+    let disposed = false;
+    const dispose = () => {
+      if (disposed) return;
+      disposed = true;
+      killDetached(child);
+      if (process.env.DISPLAY === display) delete process.env.DISPLAY;
+    };
+    process.on('exit', dispose);
+    process.on('SIGINT', dispose);
+    process.on('SIGTERM', dispose);
+    return { display, dispose };
+  }
+
+  // 'auto' mode: join the shared owner if one exists or is being created.
+  if (process.platform !== 'linux') return noopHandle();
+
+  if (owner) {
+    owner.refCount += 1;
+    return { display: owner.display, dispose: ownerDispose() };
+  }
+  if (spawning) {
+    await spawning;
+    // The spawn that just finished may have failed (spawning resolves either way, never
+    // rejects - see below), in which case `owner` is still null and we fall through to
+    // become the new spawner ourselves rather than propagating a sibling call's error.
+    // Known narrow gap: if two+ joiners fall through here at once (the one spawn attempt
+    // they were all waiting on failed), each independently computes its own free display
+    // number and spawns - the original TOCTOU race this whole scheme exists to avoid,
+    // reintroduced only for this recovery-from-failure path. Accepted rather than adding
+    // a second lock layer: it only matters when a transient failure (not "Xvfb missing",
+    // which every joiner would hit identically anyway) coincides with concurrency, a much
+    // narrower window than the bug this fixes, which hit on every ordinary run.
+    if (owner) {
+      owner.refCount += 1;
+      return { display: owner.display, dispose: ownerDispose() };
+    }
+  }
+
+  // No externally-provided DISPLAY, and nothing of ours is spawned or spawning yet - we
+  // become the owner. Checked here, not before the `owner`/`spawning` checks above, so a
+  // caller-supplied DISPLAY only wins when this is genuinely the first call in the
+  // process; a second 'auto' call must still join our own already-spawned Xvfb even if
+  // some external DISPLAY also happens to be set (we set process.env.DISPLAY ourselves
+  // right below, so by the time a sibling call gets here it looks the same either way).
+  if (process.env.DISPLAY) return noopHandle();
+
+  let resolveSpawning;
+  spawning = new Promise((resolve) => { resolveSpawning = resolve; });
+  try {
+    const displayNumber = findFreeDisplayNumber();
+    const child = await spawnAndWait(displayNumber, screen);
+    const display = `:${displayNumber}`;
+    process.env.DISPLAY = display;
+    owner = { display, child, refCount: 1 };
+
+    process.on('exit', ownerDispose());
+    process.on('SIGINT', ownerDispose());
+    process.on('SIGTERM', ownerDispose());
+
+    return { display, dispose: ownerDispose() };
+  } finally {
+    spawning = null;
+    resolveSpawning();
+  }
 }
 
 function parseDisplayNumber(mode) {

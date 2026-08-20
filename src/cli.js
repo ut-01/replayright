@@ -65,7 +65,9 @@ Options:
                                  before and after recording, so the session starts and
                                  ends logged-out. Off by default - the profile persists
                                  so cookie banners and logins survive between sessions.
-  --times <n>                    Override every repeat block's iteration count.
+  --times <n>                    Override every repeat block's iteration count. Capped by
+                                 config.repeat.maxTimes (default 50) - raise it in
+                                 replayright.config.json if you really mean more.
   --out <path>                   play/verify only. Where to write extracted rows (CSV or
                                  JSON by extension). Default sites/<id>/output.csv.
                                  Written only if the flow tags at least one field.
@@ -167,8 +169,19 @@ function sitePaths(siteId, sitesDir) {
 // output.path/format come from config (defaults reproduce today's sites/<id>/output.csv,
 // extension-sniffed). writeOutput() only looks at the path's extension, so an explicit
 // output.format override (rather than 'auto') is applied by writing directly instead.
+//
+// No `baseDir` override here - deliberately, matching resolveSitesDir's own call below,
+// which also passes none. Without this, a relative output.path always resolved against
+// REPO_ROOT (this package's own install directory) instead of config.__meta.rootDir (the
+// directory a discovered replayright.config.json lives in, or cwd) - the same bug
+// resolveSitesDir was already immune to. A --sites-dir pointed outside the repo, or this
+// package used as a library from another project, silently wrote output.csv under
+// REPO_ROOT/sites/<id>/ while flow.json/fingerprint.json/failures/ all correctly landed
+// under the resolved sitesDir - splitting one run's artifacts across two unrelated
+// directory trees. In the common case (no config file, invoked from the repo root),
+// process.cwd() === REPO_ROOT, so this produces byte-identical paths to before.
 function writeConfiguredOutput(config, siteId, records) {
-  const outPath = resolveOutputPath(config, siteId, { baseDir: REPO_ROOT });
+  const outPath = resolveOutputPath(config, siteId);
   const format = resolveOutputFormat(config, outPath);
   if (!records || !records.length) return null;
   fs.mkdirSync(path.dirname(outPath), { recursive: true });
@@ -289,7 +302,7 @@ async function cmdVerify(args) {
   await resolveRequiresHeaded(flow, args, configWithCliArgs);
   fs.writeFileSync(sitePaths(args.id, resolvedSitesDir).flow, JSON.stringify(flow, null, 2));
 
-  if (args.times) overrideTimes(flow.steps, args.times);
+  if (args.times !== undefined) overrideTimes(flow.steps, args.times);
 
   // verify defaults headed too ("replay headed + per-step report"), so it needs the
   // same Xvfb treatment as record on a headless Linux box. Skipped when explicitly run
@@ -334,7 +347,7 @@ async function cmdPlay(args) {
   const configWithCliArgs = loadConfig({ cwd: process.cwd(), flow, cliOverrides: { sitesDir: args.sitesDir }, cliArgs: args });
   setLogFormat(configWithCliArgs.log.format);
 
-  if (args.times) overrideTimes(flow.steps, args.times);
+  if (args.times !== undefined) overrideTimes(flow.steps, args.times);
   if (!flow.verified) logWarn('this flow has never passed verification; run `verify --id ' + args.id + '` before trusting it');
 
   const paths = sitePaths(args.id, resolvedSitesDir);
@@ -471,12 +484,19 @@ function enumerateSitesForRun(sitesDir, tag) {
 // Maps `run --all`'s own args onto the same options shape index.js's play() (via
 // configOverridesFrom, see index.js's header) already accepts for a single `play --id=x`
 // - deliberately narrow: only the flags run --all itself exposes (sitesDir, headless,
-// times, out, display, screen, log, and the three opt-in Chromium args) flow through to
-// each site. browserArgs is built the same way config.js's configFromCliArgs() builds it
-// for a single play - `undefined` (not `[]`) when no disable flag was passed, so an empty
+// times, display, screen, log, and the three opt-in Chromium args) flow through to each
+// site. browserArgs is built the same way config.js's configFromCliArgs() builds it for
+// a single play - `undefined` (not `[]`) when no disable flag was passed, so an empty
 // array here never OUTRANKS a site's own browser.args set via replayright.config.json or
 // flow.config (config.js's CLI layer wins over both, and an array REPLACES rather than
 // merges - see config.js's mergeLayer comment).
+//
+// `--out` is deliberately NOT forwarded here, unlike every other flag: it is one literal
+// path, and `--out`'s own --help text already says "play/verify only" - forwarding it as
+// every site's CLI-layer (highest-precedence) output.path would make every site in the
+// batch collapse onto that same one file, each site's write silently clobbering the
+// last. Each site keeps its own resolved output.path (its per-site default, or whatever
+// its own replayright.config.json/flow.config set) instead.
 function playOptionsForRunAll(siteId, args) {
   const browserArgs = [];
   if (args.disableDevShmUsage) browserArgs.push('--disable-dev-shm-usage');
@@ -488,7 +508,6 @@ function playOptionsForRunAll(siteId, args) {
     sitesDir: args.sitesDir,
     headless: args.headless,
     times: args.times,
-    out: args.out,
     display: args.display,
     screen: args.screen,
     browserArgs: browserArgs.length ? browserArgs : undefined,

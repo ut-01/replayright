@@ -112,8 +112,14 @@ function runFlowOptionsFrom(config) {
 
 // output.path/format come from config (defaults reproduce sites/<id>/output.csv,
 // extension-sniffed).
+//
+// No `baseDir` override - see cli.js's own writeConfiguredOutput for why: without this,
+// a relative output.path resolved against REPO_ROOT (replayright's own install
+// directory) instead of config.__meta.rootDir, so a consumer using this as a library
+// from another project got its site's flow.json/fingerprint.json correctly under the
+// resolved sitesDir but its output.csv written into node_modules/replayright/sites/...
 function writeConfiguredOutput(config, siteId, records) {
-  const outPath = resolveOutputPath(config, siteId, { baseDir: REPO_ROOT });
+  const outPath = resolveOutputPath(config, siteId);
   const format = resolveOutputFormat(config, outPath);
   if (!records || !records.length) return null;
   fs.mkdirSync(path.dirname(outPath), { recursive: true });
@@ -268,7 +274,7 @@ async function verify(options = {}) {
   const paths = sitePathsFor(siteId, resolvedSitesDir);
   fs.writeFileSync(paths.flow, JSON.stringify(flow, null, 2));
 
-  if (options.times) overrideTimes(flow.steps, options.times);
+  if (options.times !== undefined) overrideTimes(flow.steps, options.times);
 
   // verify defaults headed too ("replay headed + per-step report"), same as cli.js.
   const verifyHeadless = options.headless ?? false;
@@ -321,7 +327,7 @@ async function play(options = {}) {
   const configWithFlow = loadConfig({ cwd: process.cwd(), flow, cliOverrides: configOverridesFrom(options) });
   setLogFormat(configWithFlow.log.format);
 
-  if (options.times) overrideTimes(flow.steps, options.times);
+  if (options.times !== undefined) overrideTimes(flow.steps, options.times);
 
   const paths = sitePathsFor(siteId, resolvedSitesDir);
   const wasVerified = !!flow.verified;

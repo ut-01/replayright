@@ -24,15 +24,23 @@ npm run list                                   # recorded sites + verified/UNVER
 
 Flags (all commands): `--headless[=true|false]` (default: false for record/verify, true for
 play), `--times <n>` overrides *every* `repeat` block's iteration count — the fast way to
-smoke-test a flow without editing `flow.json`.
+smoke-test a flow without editing `flow.json`. `--times` also seeds `config.repeat.defaultTimes`
+(so a block with no `times` of its own agrees with the flag too), which means a value above
+`config.repeat.maxTimes` (default 50) is rejected at config-load time with a "raise
+repeat.maxTimes" error, before the run even starts — raise the cap via `replayright.config.json`
+or `--times` stays capped at 50 regardless of what's passed.
 
-There is **no test suite, no linter, and no build**. `README.md` refers to a `test/`
-directory that does not exist in this repo; `recordSite()`'s `drive` parameter is the seam
-left for such tests (it replaces "wait for a human to close the browser" with a callback).
-Verification is done by running `verify` against a real site.
+There **is** a test suite now (`npm test`, `node --test`; no linter, no build).
+`recordSite()`'s `drive` parameter is the seam that made it possible — it replaces "wait
+for a human to close the browser" with a callback, so a recording session can be driven
+headlessly against a local fixture. Verification of a real site is still done by running
+`verify` against it; the test suite covers the pipeline's own logic.
 
-Exit codes matter — they are the scheduled-job contract. `play` exits non-zero on drift
-`BROKEN`, on any `SELECTOR_UNRESOLVED`, on abort, or when zero actions ran.
+Exit codes matter — they are the scheduled-job contract. `play` exits non-zero with a
+distinct code per cause (`src/constants.js#EXIT_CODE`, checked in this priority order):
+`10` drift `BROKEN`, `11` any `SELECTOR_UNRESOLVED`, `13` aborted mid-run, `12` zero
+actions ran. `verify` stays plain 0/1 — it never touches the fingerprint and is meant for
+a human reading the per-step report, not an automated branch.
 
 ## Architecture
 

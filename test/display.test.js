@@ -119,3 +119,66 @@ test(
     }
   }
 );
+
+// Regression tests for a bug found during review: dispose() killed the Xvfb child but
+// never cleared process.env.DISPLAY, so a SECOND ensureDisplay({mode:'auto'}) call in the
+// same process (e.g. one site after another in `run --all`) found DISPLAY still set to
+// the now-dead socket, hit the "already usable" no-op short-circuit, and handed its
+// caller a display nothing was listening on - a real headed launch silently regressing to
+// a broken one. Fixed by having dispose() clear DISPLAY (only if it still points at the
+// display this call owns), and by having 'auto' mode reference-count concurrent/
+// sequential callers in-process so they share one Xvfb instead of racing to spawn their
+// own or tearing it down while a sibling is still using it.
+test(
+  'a second sequential ensureDisplay() call after dispose() spawns a fresh, working display - not a stale no-op',
+  { skip: XVFB_AVAILABLE ? false : 'Xvfb binary not found on PATH (expected on non-Linux dev machines)' },
+  async () => {
+    const original = process.env.DISPLAY;
+    delete process.env.DISPLAY;
+    try {
+      const first = await ensureDisplay({ mode: 'auto' });
+      assert.match(first.display, /^:\d+$/);
+      first.dispose();
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      assert.strictEqual(process.env.DISPLAY, undefined, 'dispose() should have cleared DISPLAY');
+
+      const second = await ensureDisplay({ mode: 'auto' });
+      assert.match(second.display, /^:\d+$/);
+      const { existsSync } = require('node:fs');
+      assert.ok(existsSync(socketPathFor(second.display.slice(1))), 'the second call should have spawned its own live Xvfb, not reused a dead one');
+      second.dispose();
+    } finally {
+      if (original === undefined) delete process.env.DISPLAY;
+      else process.env.DISPLAY = original;
+    }
+  }
+);
+
+test(
+  'two concurrent auto-mode ensureDisplay() calls share one Xvfb; it is only torn down once BOTH dispose',
+  { skip: XVFB_AVAILABLE ? false : 'Xvfb binary not found on PATH (expected on non-Linux dev machines)' },
+  async () => {
+    const original = process.env.DISPLAY;
+    delete process.env.DISPLAY;
+    try {
+      const [a, b] = await Promise.all([ensureDisplay({ mode: 'auto' }), ensureDisplay({ mode: 'auto' })]);
+      assert.strictEqual(a.display, b.display, 'concurrent auto-mode calls should share one display, not spawn two');
+
+      const { existsSync } = require('node:fs');
+      const socket = socketPathFor(a.display.slice(1));
+      assert.ok(existsSync(socket));
+
+      a.dispose();
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      assert.ok(existsSync(socket), 'the shared Xvfb must still be alive - b has not disposed yet');
+      assert.strictEqual(process.env.DISPLAY, a.display, 'DISPLAY must not be cleared while a sibling still holds a reference');
+
+      b.dispose();
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      assert.ok(!existsSync(socket), 'the shared Xvfb should be gone once the last reference disposes');
+    } finally {
+      if (original === undefined) delete process.env.DISPLAY;
+      else process.env.DISPLAY = original;
+    }
+  }
+);
