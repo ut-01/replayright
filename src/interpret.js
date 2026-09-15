@@ -466,6 +466,35 @@ async function runRepeat(step, ctx) {
   }
 }
 
+// candidates.resolve() returns as soon as a candidate matches ANYTHING non-zero - the
+// right behavior for "has this list shell appeared yet", but wrong for a list whose
+// item count is still moving: a table that fills in the rest of its rows via a
+// follow-up AJAX response (too few, at first), or a page that transiently renders a
+// huge duplicated/loading DOM before settling to its real content (too many, briefly -
+// observed on a live site as a two-tick spike to 755 "tr" matches before dropping to
+// the true 52). Either way, a single non-zero read cannot be trusted, so a raw ">="
+// check against `expectedCount` is not enough - it would happily lock in the 755.
+// Instead, keep re-resolving until the count holds steady across consecutive polls:
+// two matching reads at exactly `expectedCount` (fast path - this is what recording
+// saw), or three matching reads at any other value (the list has genuinely changed
+// since recording), or the settle budget runs out, whichever comes first.
+async function resolveItemsUntilStable(step, ctx, resolveItems) {
+  let last = await resolveItems(ctx);
+  if (!step.expectedCount) return last;
+
+  const deadline = Date.now() + ctx.opts.settleTimeoutMs;
+  let stableStreak = 1;
+  while (Date.now() < deadline) {
+    if (last.count === step.expectedCount && stableStreak >= 2) return last;
+    if (stableStreak >= 3) return last;
+    await sleep(300);
+    const next = await resolveItems(ctx);
+    stableStreak = next.count === last.count ? stableStreak + 1 : 1;
+    last = next;
+  }
+  return last;
+}
+
 async function runForeach(step, ctx) {
   // Resolved fresh every iteration, never cached: any navigation inside the body
   // detaches every handle from the previous document. Playwright locators are lazy,
@@ -485,7 +514,7 @@ async function runForeach(step, ctx) {
     return items;
   };
 
-  const first = await resolveItems(ctx);
+  const first = await resolveItemsUntilStable(step, ctx, resolveItems);
   const total = first.count;
 
   if (step.expectedCount && total !== step.expectedCount) {
