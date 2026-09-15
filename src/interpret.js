@@ -3,10 +3,12 @@
 // Executes a flow.json. This is the authoritative player - the emitted .js is a
 // read-only debug artifact, never the thing that runs.
 //
-// Three step kinds, nested arbitrarily:
+// Step kinds, nested arbitrarily:
 //   { kind: 'action', scope, selectors|relativeSelectors, action }
 //   { kind: 'repeat', times, untilGone?, settle?, body: [...] }
 //   { kind: 'foreach', parentSelectors, itemSelectors, expectedCount?, body: [...] }
+//   { kind: 'extract', key, relativeSelectors }
+//   { kind: 'assert', scope, selectors|relativeSelectors, check, message? }
 //
 // Nesting is the whole point: the real-world shape is a `repeat` over pages wrapping
 // a `foreach` over the cards on each page. The previous implementation flattened
@@ -323,6 +325,98 @@ async function runExtract(step, ctx) {
   }
 }
 
+// Unlike runExtract, a failed assertion always fails the run - the whole point of this
+// step kind is to say "the page rendered but the state/data looks wrong", distinctly
+// from a vanished selector (SELECTOR_UNRESOLVED) or a watched selector drifting
+// (DRIFT_BROKEN). Thrown as AssertionError (code ASSERT_FAILED) so cli.js can report it
+// under its own exit code (src/constants.js#EXIT_CODE.ASSERT_FAILED) rather than lumping
+// it in with either of those.
+class AssertionError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'AssertionError';
+    this.code = 'ASSERT_FAILED';
+  }
+}
+
+function compareCount(actual, op, expected) {
+  switch (op || 'eq') {
+    case 'eq': return actual === expected;
+    case 'gte': return actual >= expected;
+    case 'lte': return actual <= expected;
+    case 'gt': return actual > expected;
+    case 'lt': return actual < expected;
+    default: throw new Error(`unsupported count check op ${JSON.stringify(op)}`);
+  }
+}
+
+async function runAssert(step, ctx) {
+  const check = step.check || {};
+  const label = step.message || `assert ${check.type}`;
+  const scopeName = step.scope || 'page';
+  const isItemScoped = scopeName === 'item';
+  if (isItemScoped && !ctx.item) {
+    throw new Error(`step is item-scoped but is not inside a foreach (malformed flow)`);
+  }
+
+  const detailPage = ctx.detailRef?.page || ctx.page;
+  const scope = isItemScoped ? ctx.item : (scopeName === 'detail' ? detailPage : ctx.page);
+  const actingPage = scopeName === 'detail' ? detailPage : ctx.page;
+  const selectors = isItemScoped ? step.relativeSelectors : step.selectors;
+
+  if (check.type === 'url') {
+    const url = actingPage.url();
+    const ok = check.op === 'equals' ? url === check.value : url.includes(check.value);
+    if (!ok) {
+      throw new AssertionError(`${label}: expected URL ${check.op === 'equals' ? 'to equal' : 'to contain'} ${JSON.stringify(check.value)}, got ${JSON.stringify(url)}`);
+    }
+  } else if (check.type === 'count') {
+    // Deliberately NOT candidates.resolve() - a count check's whole point can be "expect
+    // 0 matches" (e.g. a banner is gone), and resolve() treats a zero-match candidate as
+    // a failure to fall back past rather than a valid answer. A count check therefore
+    // always reads a single selector, not a ranked/fallback list.
+    const selector = (selectors && selectors[0]) ?? '';
+    const locator = candidates.scopedLocator(scope, selector);
+    const actual = await locator.count();
+    if (!compareCount(actual, check.op, check.count)) {
+      throw new AssertionError(`${label}: expected count ${check.op || 'eq'} ${check.count} for ${JSON.stringify(selector)}, got ${actual}`);
+    }
+  } else if (check.type === 'text-equals' || check.type === 'text-contains' || check.type === 'attribute') {
+    let locator;
+    try {
+      ({ locator } = await candidates.resolve(scope, selectors, {
+        what: label,
+        onFallback: onFallbackFor(ctx),
+        waitMs: ctx.opts.resolveWaitMs,
+      }));
+    } catch (err) {
+      // Folded into ASSERT_FAILED rather than left as SELECTOR_UNRESOLVED - an assert's
+      // own target not resolving IS the assertion failing ("expect this to be there"),
+      // not a separate "an action's target vanished" signal.
+      throw new AssertionError(`${label}: target could not be resolved (${err.message.split('\n')[0]})`);
+    }
+    if (check.type === 'attribute') {
+      const actual = await locator.first().getAttribute(check.attribute);
+      if (actual !== check.value) {
+        throw new AssertionError(`${label}: expected attribute ${JSON.stringify(check.attribute)} to be ${JSON.stringify(check.value)}, got ${JSON.stringify(actual)}`);
+      }
+    } else {
+      const text = (await locator.first().innerText()).trim();
+      const ok = check.type === 'text-equals' ? text === check.value : text.includes(check.value);
+      if (!ok) {
+        throw new AssertionError(`${label}: expected text ${check.type === 'text-equals' ? 'to equal' : 'to contain'} ${JSON.stringify(check.value)}, got ${JSON.stringify(text)}`);
+      }
+    }
+  } else {
+    throw new Error(`unsupported assert check type ${JSON.stringify(check.type)}`);
+  }
+
+  // Counted as a "step executed", same reasoning as runExtract: an assert-only flow is a
+  // legitimate shape and actions === 0 is what play/verify treat as "nothing happened".
+  ctx.stats.actions += 1;
+  ctx.stats.steps.push({ path: ctx.path, kind: 'assert', status: 'ok' });
+}
+
 async function runRepeat(step, ctx) {
   // `ctx.opts.repeatMaxTimes` is config's "you probably did not mean that many pages"
   // guard (default 50, see config.js) - distinct from HARD_LOOP_CEILING, the runaway
@@ -523,6 +617,10 @@ async function runSteps(steps, ctx) {
         break;
       case 'extract':
         await runExtract(step, stepCtx);
+        break;
+      case 'assert':
+        await runAssert(step, stepCtx);
+        ctx.stats.consecutiveErrors = 0;
         break;
       case 'repeat':
         await runRepeat(step, stepCtx);

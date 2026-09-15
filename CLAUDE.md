@@ -48,9 +48,10 @@ headlessly against a local fixture. Verification of a real site is still done by
 
 Exit codes matter — they are the scheduled-job contract. `play` exits non-zero with a
 distinct code per cause (`src/constants.js#EXIT_CODE`, checked in this priority order):
-`10` drift `BROKEN`, `11` any `SELECTOR_UNRESOLVED`, `13` aborted mid-run, `12` zero
-actions ran. `verify` stays plain 0/1 — it never touches the fingerprint and is meant for
-a human reading the per-step report, not an automated branch.
+`10` drift `BROKEN`, `11` any `SELECTOR_UNRESOLVED`, `14` any `ASSERT_FAILED` (an `assert`
+step's check failed — the page rendered fine but its state/data didn't match), `13`
+aborted mid-run, `12` zero actions ran. `verify` stays plain 0/1 — it never touches the
+fingerprint and is meant for a human reading the per-step report, not an automated branch.
 
 ## Architecture
 

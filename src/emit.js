@@ -110,6 +110,20 @@ function emitSteps(steps, indent, itemVar, depth = 0) {
       continue;
     }
 
+    if (step.kind === 'assert') {
+      const isItem = step.scope === 'item';
+      const list = isItem ? step.relativeSelectors : step.selectors;
+      const primary = list?.[0];
+      const check = step.check || {};
+      const target = check.type === 'url'
+        ? (step.scope === 'detail' ? 'detailPage' : 'page')
+        : isItem
+          ? (primary === '' ? itemVar : `${itemVar}.locator(${q(primary)})`)
+          : `${step.scope === 'detail' ? 'detailPage' : 'page'}.locator(${q(primary)})`;
+      lines.push(`${pad}// assert ${q(check.type)}${step.message ? `: ${step.message}` : ''} against ${target} (see flow.json for the check)`);
+      continue;
+    }
+
     lines.push(`${pad}// unknown step kind ${q(step.kind)}`);
   }
 

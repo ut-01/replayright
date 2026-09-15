@@ -166,4 +166,4 @@ async function isGoneOrDisabled(scope, selector) {
   }
 }
 
-module.exports = { resolve, isGoneOrDisabled, SelectorResolutionError };
+module.exports = { resolve, isGoneOrDisabled, scopedLocator, SelectorResolutionError };

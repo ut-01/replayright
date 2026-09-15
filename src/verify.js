@@ -46,7 +46,7 @@ function auditShape(flow) {
         // during recording rather than something anyone meant - except a pure
         // "scrape this listing" body with only `extract` steps and no click/fill,
         // which is legitimate and counts as touching the item too.
-        if (!(step.body || []).some((s) => s.scope === 'item' || s.kind === 'extract')) {
+        if (!(step.body || []).some((s) => s.scope === 'item' || s.kind === 'extract' || s.kind === 'assert')) {
           problems.push(`${at}: foreach has no per-item steps - every iteration would do the same thing`);
         }
         walk(step.body, `${at}.`);
@@ -64,6 +64,10 @@ function auditShape(flow) {
         }
       } else if (step.kind === 'extract') {
         if (!step.relativeSelectors?.length) problems.push(`${at}: extract "${step.key}" has no selector candidates`);
+      } else if (step.kind === 'assert') {
+        const list = step.scope === 'item' ? step.relativeSelectors : step.selectors;
+        if (step.check?.type !== 'url' && !list?.length) problems.push(`${at}: assert has no selector candidates`);
+        if (!step.check?.type) problems.push(`${at}: assert step is missing "check"`);
       }
     });
   };

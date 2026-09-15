@@ -5,9 +5,10 @@
 // foreach (interpret.js tolerates this at runtime by writing null - useful to flag as a
 // mistake anyway, not fatal), an empty selector array masquerading as "no selectors
 // needed", or a repeat/foreach with nothing in its body.
-const KNOWN_KINDS = new Set(['action', 'repeat', 'foreach', 'extract']);
+const KNOWN_KINDS = new Set(['action', 'repeat', 'foreach', 'extract', 'assert']);
 const PAGE_LEVEL_ACTIONS = new Set(['openPage', 'closePage', 'navigate']);
 const KNOWN_ACTION_NAMES = new Set(['click', 'check', 'uncheck', 'fill', 'press', 'select', 'hover', ...PAGE_LEVEL_ACTIONS]);
+const KNOWN_ASSERT_CHECK_TYPES = new Set(['text-equals', 'text-contains', 'count', 'attribute', 'url']);
 
 function isNonEmptyArray(value) {
   return Array.isArray(value) && value.length > 0;
@@ -42,6 +43,29 @@ function validateSteps(steps, { path: pathPrefix, insideForeach }, errors, warni
       if (!insideForeach) warnings.push(`${stepPath}: extract step "${step.key}" is not inside a foreach - it will always write null at replay time`);
       if (step.relativeSelectors !== undefined && !isNonEmptyArray(step.relativeSelectors)) {
         errors.push(`${stepPath}: extract step's relativeSelectors, when present, must be a non-empty array`);
+      }
+    }
+
+    if (step.kind === 'assert') {
+      const check = step.check || {};
+      const selectors = step.scope === 'item' ? step.relativeSelectors : step.selectors;
+      if (!KNOWN_ASSERT_CHECK_TYPES.has(check.type)) {
+        errors.push(`${stepPath}: unknown assert check type ${JSON.stringify(check.type)}`);
+      } else if (check.type === 'url') {
+        if (check.value === undefined) errors.push(`${stepPath}: assert step's check needs a "value"`);
+      } else if (check.type === 'count') {
+        if (!isNonEmptyArray(selectors) || selectors.length !== 1) {
+          errors.push(`${stepPath}: assert "count" step needs exactly one selector (0 matches is a valid outcome, so it can't use a ranked/fallback list)`);
+        }
+        if (check.count === undefined) errors.push(`${stepPath}: assert "count" step's check needs a "count"`);
+      } else {
+        if (!isNonEmptyArray(selectors)) {
+          errors.push(`${stepPath}: assert step needs a non-empty ${step.scope === 'item' ? 'relativeSelectors' : 'selectors'} array`);
+        }
+        if (check.type === 'attribute' && !check.attribute) {
+          errors.push(`${stepPath}: assert "attribute" step's check needs an "attribute" name`);
+        }
+        if (check.value === undefined) errors.push(`${stepPath}: assert step's check needs a "value"`);
       }
     }
 

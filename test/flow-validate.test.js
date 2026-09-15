@@ -32,7 +32,7 @@ test('a well-formed flow (action, foreach with nested extract, repeat) has no er
 });
 
 test('flags an unknown step kind', () => {
-  const { errors } = validateFlow(baseFlow([{ kind: 'assert', text: 'foo' }]));
+  const { errors } = validateFlow(baseFlow([{ kind: 'wait', text: 'foo' }]));
   assert.strictEqual(errors.length, 1);
   assert.match(errors[0], /unknown step kind/);
 });
@@ -82,6 +82,49 @@ test('flags a foreach step missing parentSelectors/itemSelectors', () => {
   assert.strictEqual(errors.length, 2);
   assert(errors.some((e) => /parentSelectors/.test(e)));
   assert(errors.some((e) => /itemSelectors/.test(e)));
+});
+
+test('a well-formed assert step of every check type has no errors', () => {
+  const { errors } = validateFlow(baseFlow([
+    { kind: 'assert', scope: 'page', selectors: ['h1'], check: { type: 'text-equals', value: 'Open roles' } },
+    { kind: 'assert', scope: 'page', selectors: ['h1'], check: { type: 'text-contains', value: 'Open' } },
+    { kind: 'assert', scope: 'page', selectors: ['li.card'], check: { type: 'count', op: 'gte', count: 1 } },
+    { kind: 'assert', scope: 'page', selectors: ['a.card-link'], check: { type: 'attribute', attribute: 'href', value: 'job.html' } },
+    { kind: 'assert', scope: 'page', check: { type: 'url', value: 'example.com' } },
+  ]));
+  assert.deepStrictEqual(errors, []);
+});
+
+test('flags an assert step with an unknown check type', () => {
+  const { errors } = validateFlow(baseFlow([{ kind: 'assert', selectors: ['h1'], check: { type: 'glow' } }]));
+  assert.strictEqual(errors.length, 1);
+  assert.match(errors[0], /unknown assert check type/);
+});
+
+test('flags an assert "count" check with more than one selector', () => {
+  const { errors } = validateFlow(baseFlow([
+    { kind: 'assert', selectors: ['a', 'b'], check: { type: 'count', count: 1 } },
+  ]));
+  assert.strictEqual(errors.length, 1);
+  assert.match(errors[0], /exactly one selector/);
+});
+
+test('flags an assert "attribute" check missing the attribute name', () => {
+  const { errors } = validateFlow(baseFlow([
+    { kind: 'assert', selectors: ['a'], check: { type: 'attribute', value: 'x' } },
+  ]));
+  assert.strictEqual(errors.length, 1);
+  assert.match(errors[0], /needs an "attribute" name/);
+});
+
+test('flags an assert "url" check missing "value", and a "text-equals" check missing selectors', () => {
+  const { errors: urlErrors } = validateFlow(baseFlow([{ kind: 'assert', check: { type: 'url' } }]));
+  assert.strictEqual(urlErrors.length, 1);
+  assert.match(urlErrors[0], /needs a "value"/);
+
+  const { errors: textErrors } = validateFlow(baseFlow([{ kind: 'assert', check: { type: 'text-equals', value: 'x' } }]));
+  assert.strictEqual(textErrors.length, 1);
+  assert.match(textErrors[0], /non-empty selectors array/);
 });
 
 test('flags a flow with no steps at all, and a flow missing startUrl', () => {

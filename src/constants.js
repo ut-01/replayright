@@ -38,6 +38,12 @@ const EXIT_CODE = {
   ZERO_ACTIONS: 12, // the run completed but performed zero actions - almost always a
   // sign the flow no longer matches the page, just without a specific SELECTOR_UNRESOLVED
   // to point at (e.g. every step's candidates.resolve() timed out silently).
+  ASSERT_FAILED: 14, // >=1 'assert' step failed - the site rendered and its own selectors
+  // resolved fine, but the page/data state didn't match what the flow expects. Distinct
+  // from SELECTOR_UNRESOLVED (an action's own target vanished - the site's shape changed)
+  // and DRIFT_BROKEN (the watched selectors themselves stopped matching): this is "the
+  // site still looks the same, but the data looks wrong". Checked in priority just after
+  // SELECTOR_UNRESOLVED and before ABORTED - see cli.js's cmdPlay.
 };
 
 module.exports = {

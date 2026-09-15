@@ -194,7 +194,7 @@ match something and now matches nothing. That is the signal to re-record.
 
 ## flow.json reference
 
-Four step kinds, nestable:
+Five step kinds, nestable:
 
 ```jsonc
 { "kind": "action",
@@ -224,7 +224,22 @@ Four step kinds, nestable:
 { "kind": "extract",                 // only ever appears directly inside a foreach's body
   "key": "Title",                    // the pill's label, or whatever you typed into "+ Field"
   "relativeSelectors": ["..."] }     // relative to the current entry; "" means the entry itself
+
+{ "kind": "assert",                  // hand-authored only - not produced by the recorder
+  "scope": "page" | "item" | "detail",
+  "selectors": ["..."],              // page/detail scope; "count" checks use only [0]
+  "relativeSelectors": ["..."],      // item scope
+  "check": {
+    "type": "text-equals" | "text-contains" | "count" | "attribute" | "url",
+    "value": "...",                 // expected text / attribute value / URL (not for "count")
+    "attribute": "href",            // "attribute" checks only
+    "op": "eq",                     // "count": eq|gte|lte|gt|lt (default eq)
+                                     // "url": equals|contains (default contains)
+    "count": 1 },                   // "count" checks only
+  "message": "optional label used in the failure report" }
 ```
+
+Unlike `extract`, a failed `assert` **always** fails the run - see "Assertions" below.
 
 ### Checking a hand edit: `validate`
 
@@ -235,6 +250,24 @@ the shape above - unknown step kind, an `extract` outside any `foreach`, an empt
 selector array, a `repeat`/`foreach` with nothing in its body - with **no browser
 and no network call**, so it's a fast sanity check to run right after an edit,
 before spending a full `verify` cycle against the live site.
+
+### Assertions
+
+An `assert` step is the opposite of `extract`'s failure policy: where a missing field
+just writes `null` and warns, a failed assertion always fails the run, distinctly - `play`
+exits `14` (`src/constants.js#EXIT_CODE.ASSERT_FAILED`) when at least one `assert` step
+failed, separate from `11` (an action's own selector vanished - the site changed) and `10`
+(drift). This is the way to tell "the site rendered fine but the data looks wrong" apart
+from "the site changed" in a scheduled job.
+
+`assert` steps are hand-authored only - there is no recorder support (no overlay button,
+no marker) for them yet, so add them to `flow.json` directly after recording, the same way
+a `fill` step's secret placeholder is hand-edited in. A `count` check is intentionally
+limited to a single selector rather than a ranked/fallback list, because "0 matches" is
+often the whole point of the check (e.g. asserting a banner is gone) - `candidates.resolve()`'s
+fallback logic treats a zero-match candidate as something to fall back past, which would
+be wrong here. `replayright validate` checks an `assert` step's shape the same way it
+checks the other four kinds.
 
 ### Secrets in `fill` steps
 

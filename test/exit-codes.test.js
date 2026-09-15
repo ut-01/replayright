@@ -74,6 +74,52 @@ test('play exits with EXIT_CODE.SELECTOR_UNRESOLVED (11), not a generic 1, when 
   }
 });
 
+test('play exits with EXIT_CODE.ASSERT_FAILED (14), not SELECTOR_UNRESOLVED, when an assert step fails', async () => {
+  const sitesDir = fs.mkdtempSync(path.join(os.tmpdir(), 'replayright-exitcode-'));
+  const siteId = 'exit-code-assert-failed';
+  const siteDir = path.join(sitesDir, siteId);
+  fs.mkdirSync(siteDir, { recursive: true });
+
+  const flow = {
+    siteId,
+    startUrl: fixture('paged', 'page1.html'),
+    verified: true,
+    requiresHeaded: false,
+    steps: [
+      {
+        kind: 'repeat',
+        times: 1,
+        body: [
+          { kind: 'assert', scope: 'page', selectors: ['h1'], check: { type: 'text-equals', value: 'Not the actual heading' } },
+        ],
+      },
+    ],
+  };
+  fs.writeFileSync(path.join(siteDir, 'flow.json'), JSON.stringify(flow, null, 2));
+
+  try {
+    let status = 0;
+    try {
+      execSync(`node ${JSON.stringify(CLI)} play --id=${siteId} --sites-dir=${JSON.stringify(sitesDir)} --headless=true`, {
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+    } catch (err) {
+      status = err.status;
+    }
+
+    assert.strictEqual(status, EXIT_CODE.ASSERT_FAILED);
+    assert.strictEqual(status, 14);
+
+    const dir = runsDir(siteDir);
+    const files = fs.readdirSync(dir).filter((f) => f.endsWith('.json'));
+    assert.strictEqual(files.length, 1);
+    const record = JSON.parse(fs.readFileSync(path.join(dir, files[0]), 'utf8'));
+    assert.strictEqual(record.exitCode, EXIT_CODE.ASSERT_FAILED);
+  } finally {
+    fs.rmSync(sitesDir, { recursive: true, force: true });
+  }
+});
+
 test('play exits with EXIT_CODE.ZERO_ACTIONS (12) when the flow completes but performs no actions', async () => {
   const sitesDir = fs.mkdtempSync(path.join(os.tmpdir(), 'replayright-exitcode-'));
   const siteId = 'exit-code-zero-actions';

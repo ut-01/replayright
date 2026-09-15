@@ -448,11 +448,19 @@ async function cmdPlay(args) {
   const structural = stats.errors.filter((e) => e.type === 'SELECTOR_UNRESOLVED').length;
   if (structural) logError(`${structural} step(s) could not resolve any selector candidate`);
 
+  // An assert step failing means the page rendered and its own selectors resolved fine,
+  // but the data/state didn't match what the flow expects - distinct from `structural`
+  // above (an action's target vanished) and from drift (a watched selector's shape
+  // changed).
+  const assertFailures = stats.errors.filter((e) => e.type === 'ASSERT_FAILED').length;
+  if (assertFailures) logError(`${assertFailures} assertion(s) failed`);
+
   // Distinct, documented exit codes (Phase 6.3, src/constants.js#EXIT_CODE) so an
   // unattended caller can branch on WHY a run failed without parsing stdout. Checked in
   // the same priority order CLAUDE.md's contract lists them in - the first match wins.
   if (status === 'BROKEN') process.exitCode = EXIT_CODE.DRIFT_BROKEN;
   else if (structural > 0) process.exitCode = EXIT_CODE.SELECTOR_UNRESOLVED;
+  else if (assertFailures > 0) process.exitCode = EXIT_CODE.ASSERT_FAILED;
   else if (stats.aborted) process.exitCode = EXIT_CODE.ABORTED;
   else if (stats.actions === 0) process.exitCode = EXIT_CODE.ZERO_ACTIONS;
 
@@ -662,6 +670,7 @@ function describeExitCode(exitCode) {
   switch (exitCode) {
     case EXIT_CODE.DRIFT_BROKEN: return 'drift BROKEN';
     case EXIT_CODE.SELECTOR_UNRESOLVED: return 'selector unresolved';
+    case EXIT_CODE.ASSERT_FAILED: return 'assertion failed';
     case EXIT_CODE.ABORTED: return 'aborted mid-run';
     case EXIT_CODE.ZERO_ACTIONS: return 'zero actions ran';
     default: return exitCode === EXIT_CODE.OK ? null : `exit code ${exitCode}`;
