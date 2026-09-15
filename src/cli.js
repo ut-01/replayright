@@ -9,7 +9,7 @@ const { recordSite, sitePaths: recordSitePaths, countSteps } = require('./record
 const { verifyFlow } = require('./verify');
 const { runFlow } = require('./interpret');
 const { emitFlow } = require('./emit');
-const { writeOutput, toCsv, toJson } = require('./output');
+const { writeOutput, toCsv, toJson, readJsonl, appendJsonl, mergeAppendRecords } = require('./output');
 const drift = require('./drift');
 const { probeRequiresHeaded } = require('./headless-probe');
 const { logInfo, logWarn, logError, setLogFormat, setLogSiteId, EVENT } = require('./log');
@@ -17,6 +17,7 @@ const { buildRunRecord, writeRunRecord } = require('./run-record');
 const { CHROMIUM_ARGS, EXIT_CODE } = require('./constants');
 const { ensureDisplay } = require('./display');
 const { loadConfig, resolveOutputPath, resolveOutputFormat, resolveSitesDir, defaults, CONFIG_FILENAME } = require('./config');
+const { findSecretRefs } = require('./secrets');
 // index.js's play() - the same orchestration `play --id=<id>` runs (config resolution,
 // Xvfb setup, drift capture, run-record writing) - reused as-is for each site `run --all`
 // touches, rather than re-implemented here. See index.js's own header comment for why it
@@ -125,6 +126,17 @@ function loadFlow(siteId, sitesDir) {
   return flow;
 }
 
+// Fails fast, before any browser/display work, when a flow references a
+// {{env:NAME}} secret placeholder (see secrets.js) whose env var isn't set. Without
+// this, a misconfigured cron job's env would only surface as a step failure deep
+// inside a headed/Xvfb run - this turns it into a one-line error in under a second.
+function assertSecretsPresent(flow) {
+  const missing = findSecretRefs(flow.steps).filter((name) => process.env[name] === undefined);
+  if (missing.length) {
+    throw new Error(`missing environment variable(s) required by this flow's {{env:...}} placeholders: ${missing.join(', ')}`);
+  }
+}
+
 // Applied recursively so a one-off `--times 2` smoke run does not need flow.json edited.
 // This stays cli.js's own post-load step rather than something config.js does: rewriting
 // every repeat block's `times` is a stronger statement than "the default for blocks that
@@ -180,9 +192,30 @@ function sitePaths(siteId, sitesDir) {
 // under the resolved sitesDir - splitting one run's artifacts across two unrelated
 // directory trees. In the common case (no config file, invoked from the repo root),
 // process.cwd() === REPO_ROOT, so this produces byte-identical paths to before.
-function writeConfiguredOutput(config, siteId, records) {
+// `siteDir` (sitePaths(...).dir) is where output.mode: 'append' keeps its durable
+// source of truth, sites/<id>/output.records.jsonl - deliberately NOT wherever
+// output.path/`--out` points, since that can be redirected anywhere while the JSONL
+// history must stay a stable per-site artifact (same directory as flow.json,
+// fingerprint.json, history.jsonl).
+function writeConfiguredOutput(config, siteId, records, siteDir) {
   const outPath = resolveOutputPath(config, siteId);
   const format = resolveOutputFormat(config, outPath);
+
+  if (config.output.mode === 'append') {
+    // Append mode still writes nothing on a run that produced zero rows AND has no
+    // prior history - matching overwrite mode's "an untagged flow writes no file"
+    // rule - but once a JSONL history exists, output.path must keep reflecting it
+    // even on a run with no new rows.
+    const jsonlPath = path.join(siteDir, 'output.records.jsonl');
+    const existing = readJsonl(jsonlPath);
+    if ((!records || !records.length) && !existing.length) return null;
+    appendJsonl(jsonlPath, records || []);
+    const merged = mergeAppendRecords(existing, records || [], config.output.dedupeKey);
+    fs.mkdirSync(path.dirname(outPath), { recursive: true });
+    fs.writeFileSync(outPath, format === 'json' ? toJson(merged) : toCsv(merged));
+    return outPath;
+  }
+
   if (!records || !records.length) return null;
   fs.mkdirSync(path.dirname(outPath), { recursive: true });
   fs.writeFileSync(outPath, format === 'json' ? toJson(records) : toCsv(records));
@@ -291,6 +324,7 @@ async function cmdVerify(args) {
   setLogFormat(config.log.format);
   const resolvedSitesDir = resolveSitesDir(config);
   const flow = loadFlow(args.id, resolvedSitesDir);
+  assertSecretsPresent(flow);
 
   // Loaded AFTER the flow so flow.json's own `config` key (per-site tuning a human wrote
   // down by hand) takes part as the flow.config layer, one step under CLI flags.
@@ -318,7 +352,7 @@ async function cmdVerify(args) {
       ...runFlowOptionsFrom(configWithCliArgs),
     });
 
-    const written = writeConfiguredOutput(configWithCliArgs, args.id, stats.records);
+    const written = writeConfiguredOutput(configWithCliArgs, args.id, stats.records, sitePaths(args.id, resolvedSitesDir).dir);
     if (written) logInfo(`wrote ${stats.records.length} row(s) to ${path.relative(process.cwd(), written)}`, { event: EVENT.OUTPUT_WRITTEN, path: written });
 
     if (!ok) process.exitCode = 1;
@@ -344,6 +378,7 @@ async function cmdPlay(args) {
   setLogFormat(config.log.format);
   const resolvedSitesDir = resolveSitesDir(config);
   const flow = loadFlow(args.id, resolvedSitesDir);
+  assertSecretsPresent(flow);
   const configWithCliArgs = loadConfig({ cwd: process.cwd(), flow, cliOverrides: { sitesDir: args.sitesDir }, cliArgs: args });
   setLogFormat(configWithCliArgs.log.format);
 
@@ -366,7 +401,7 @@ async function cmdPlay(args) {
   for (const w of stats.warnings) logWarn(`${w.path} ${w.type}: ${w.message}`, { event: EVENT.STEP_WARNING, path: w.path });
   for (const e of stats.errors) logError(`${e.path} ${e.type}: ${e.message}`, { event: EVENT.STEP_FAILED, path: e.path });
 
-  const written = writeConfiguredOutput(configWithCliArgs, args.id, stats.records);
+  const written = writeConfiguredOutput(configWithCliArgs, args.id, stats.records, paths.dir);
   if (written) logInfo(`wrote ${stats.records.length} row(s) to ${path.relative(process.cwd(), written)}`, { event: EVENT.OUTPUT_WRITTEN, path: written });
 
   const previous = drift.loadPreviousFingerprint(args.id, resolvedSitesDir);
@@ -732,7 +767,17 @@ function buildExampleConfigWithComments() {
     "path": ${JSON.stringify(def.output.path)},
 
     // Output format: 'auto' (extension-based), 'csv', or 'json'.
-    "format": ${JSON.stringify(def.output.format)}
+    "format": ${JSON.stringify(def.output.format)},
+
+    // 'overwrite' (default) replaces output.path with this run's rows every time.
+    // 'append' accumulates every run's rows into sites/{id}/output.records.jsonl and
+    // rewrites output.path as a materialized view of the full accumulated set.
+    "mode": ${JSON.stringify(def.output.mode)},
+
+    // Field name(s), matching an extract step's label, that identify "the same row"
+    // across runs in 'append' mode (a later run's matching row replaces the earlier
+    // one). null falls back to exact whole-row equality. Ignored in 'overwrite' mode.
+    "dedupeKey": ${JSON.stringify(def.output.dedupeKey)}
   },
 
   "log": {

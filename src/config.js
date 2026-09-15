@@ -166,6 +166,17 @@ const DEFAULTS = {
     // 'auto' keeps output.js's existing rule: the PATH'S EXTENSION decides ('.json' ->
     // JSON, anything else -> CSV). 'csv' / 'json' force the format regardless of extension.
     format: 'auto',
+    // 'overwrite' (default) reproduces exactly today's behaviour: output.path is
+    // replaced wholesale with this run's rows every time. 'append' instead accumulates
+    // every run's rows into sites/<id>/output.records.jsonl (see output.js) and
+    // rewrites output.path as a materialized view of that full accumulated set, so a
+    // daily scheduled run never discards yesterday's data.
+    mode: 'overwrite',
+    // Field name(s) (matching an `extract` step's label) whose combined value
+    // identifies "the same row" across runs, for 'append' mode's upsert. null falls
+    // back to exact whole-row equality: identical rows collapse, anything that
+    // changed is kept as a new row. Ignored in 'overwrite' mode.
+    dedupeKey: null,
   },
 
   log: {
@@ -210,6 +221,8 @@ const TYPES = {
 
   'output.path': { type: 'string' },
   'output.format': { type: 'string', values: ['auto', 'csv', 'json'] },
+  'output.mode': { type: 'string', values: ['overwrite', 'append'] },
+  'output.dedupeKey': { type: 'string[]', nullable: true },
 
   'log.format': { type: 'string', values: ['text', 'json'] },
 };

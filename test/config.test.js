@@ -60,7 +60,7 @@ const DOCUMENTED_DEFAULTS = {
   profile: { persist: true, clearTracking: false, dir: null },
   timeouts: { resolveWaitMs: 8000, settleMs: 10000, probeMs: 10000 },
   repeat: { defaultTimes: 5, maxTimes: 50 },
-  output: { path: 'sites/{id}/output.csv', format: 'auto' },
+  output: { path: 'sites/{id}/output.csv', format: 'auto', mode: 'overwrite', dedupeKey: null },
   log: { format: 'text' },
 };
 
@@ -550,6 +550,51 @@ test('repeat.defaultTimes above repeat.maxTimes is rejected with a way out', () 
     cliOverrides: { repeat: { maxTimes: 1000 } },
   });
   assert.strictEqual(config.repeat.defaultTimes, 500);
+});
+
+// ---------------------------------------------------------------------------------
+// output.mode / output.dedupeKey
+// ---------------------------------------------------------------------------------
+
+test('output.mode defaults to overwrite and output.dedupeKey defaults to null', () => {
+  const dir = tmpDir();
+  const config = loadConfig({ cwd: dir, searchUp: false, env: {} });
+  assert.strictEqual(config.output.mode, 'overwrite');
+  assert.strictEqual(config.output.dedupeKey, null);
+});
+
+test('output.mode is settable via a config file and validated against the same closed set as output.format', () => {
+  const dir = tmpDir();
+  writeConfig(dir, { output: { mode: 'append' } });
+  assert.strictEqual(loadConfig({ cwd: dir, searchUp: false, env: {} }).output.mode, 'append');
+
+  writeConfig(dir, { output: { mode: 'sometimes' } });
+  assert.throws(
+    () => loadConfig({ cwd: dir, searchUp: false, env: {} }),
+    /must be one of overwrite, append/
+  );
+});
+
+test('REPLAYRIGHT_OUTPUT_MODE and REPLAYRIGHT_OUTPUT_DEDUPE_KEY are derived env var names', () => {
+  assert.strictEqual(envNameFor('output.mode'), 'REPLAYRIGHT_OUTPUT_MODE');
+  assert.strictEqual(envNameFor('output.dedupeKey'), 'REPLAYRIGHT_OUTPUT_DEDUPE_KEY');
+});
+
+test('REPLAYRIGHT_OUTPUT_DEDUPE_KEY accepts a comma-separated list, same as browser.args', () => {
+  const dir = tmpDir();
+  const config = loadConfig({ cwd: dir, searchUp: false, env: { REPLAYRIGHT_OUTPUT_DEDUPE_KEY: 'Title,URL' } });
+  assert.deepStrictEqual(config.output.dedupeKey, ['Title', 'URL']);
+});
+
+test('a site\'s flow.config can set output.mode/dedupeKey, one step under CLI but over the config file', () => {
+  const dir = tmpDir();
+  writeConfig(dir, { output: { mode: 'overwrite' } });
+  const config = loadConfig({
+    cwd: dir, searchUp: false, env: {},
+    flow: { config: { output: { mode: 'append', dedupeKey: ['Title'] } } },
+  });
+  assert.strictEqual(config.output.mode, 'append');
+  assert.deepStrictEqual(config.output.dedupeKey, ['Title']);
 });
 
 // ---------------------------------------------------------------------------------

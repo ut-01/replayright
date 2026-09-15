@@ -22,7 +22,7 @@ const { recordSite, sitePaths: sitePathsFor, countSteps } = require('./src/recor
 const { verifyFlow } = require('./src/verify');
 const { runFlow } = require('./src/interpret');
 const { emitFlow } = require('./src/emit');
-const { toCsv, toJson } = require('./src/output');
+const { toCsv, toJson, readJsonl, appendJsonl, mergeAppendRecords } = require('./src/output');
 const drift = require('./src/drift');
 const { probeRequiresHeaded } = require('./src/headless-probe');
 const { setLogFormat, setLogSiteId } = require('./src/log');
@@ -118,9 +118,24 @@ function runFlowOptionsFrom(config) {
 // directory) instead of config.__meta.rootDir, so a consumer using this as a library
 // from another project got its site's flow.json/fingerprint.json correctly under the
 // resolved sitesDir but its output.csv written into node_modules/replayright/sites/...
-function writeConfiguredOutput(config, siteId, records) {
+// Kept in sync by hand with cli.js's identical helper - see this file's header
+// comment. `siteDir` is where output.mode: 'append' keeps sites/<id>/output.records.jsonl,
+// the durable source of truth, deliberately independent of wherever output.path points.
+function writeConfiguredOutput(config, siteId, records, siteDir) {
   const outPath = resolveOutputPath(config, siteId);
   const format = resolveOutputFormat(config, outPath);
+
+  if (config.output.mode === 'append') {
+    const jsonlPath = path.join(siteDir, 'output.records.jsonl');
+    const existing = readJsonl(jsonlPath);
+    if ((!records || !records.length) && !existing.length) return null;
+    appendJsonl(jsonlPath, records || []);
+    const merged = mergeAppendRecords(existing, records || [], config.output.dedupeKey);
+    fs.mkdirSync(path.dirname(outPath), { recursive: true });
+    fs.writeFileSync(outPath, format === 'json' ? toJson(merged) : toCsv(merged));
+    return outPath;
+  }
+
   if (!records || !records.length) return null;
   fs.mkdirSync(path.dirname(outPath), { recursive: true });
   fs.writeFileSync(outPath, format === 'json' ? toJson(records) : toCsv(records));
@@ -288,7 +303,7 @@ async function verify(options = {}) {
       ...runFlowOptionsFrom(configWithFlow),
     });
 
-    const outputPath = writeConfiguredOutput(configWithFlow, siteId, result.stats.records);
+    const outputPath = writeConfiguredOutput(configWithFlow, siteId, result.stats.records, paths.dir);
     const exitCode = result.ok ? 0 : 1;
 
     const runRecordPath = writeRunRecord(paths.dir, buildRunRecord({
@@ -341,7 +356,7 @@ async function play(options = {}) {
     return { stats: runStats, fingerprint: await drift.captureFingerprint(page, flow, runStats) };
   }, { display: configWithFlow.display.mode, screen: configWithFlow.display.screen }, configWithFlow.browser.args);
 
-  const outputPath = writeConfiguredOutput(configWithFlow, siteId, stats.records);
+  const outputPath = writeConfiguredOutput(configWithFlow, siteId, stats.records, paths.dir);
 
   const previous = drift.loadPreviousFingerprint(siteId, resolvedSitesDir);
   const { status: driftStatus, issues: driftIssues } = drift.classifyDrift(previous, fingerprint);

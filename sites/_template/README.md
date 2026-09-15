@@ -225,6 +225,25 @@ Four step kinds, nestable:
   "relativeSelectors": ["..."] }     // relative to the current entry; "" means the entry itself
 ```
 
+### Secrets in `fill` steps
+
+Recording a login flow captures whatever you actually type, **verbatim** - a
+password ends up in `flow.json` (and `last-recording.actions.json`) in plain text.
+Before that file is ever committed anywhere, hand-edit the `fill` step's `text` to
+reference an environment variable instead:
+
+```jsonc
+{ "action": { "name": "fill", "text": "{{env:REPLAYRIGHT_SECRET_SITE_PASSWORD}}" } }
+```
+
+`play`/`verify` resolve `{{env:NAME}}` against `process.env` immediately before
+typing it in; a literal value with no `{{env:...}}` in it is unaffected. A flow
+whose referenced variable isn't set fails fast, before any browser is launched,
+with an error naming the missing variable - rather than launching Xvfb/Chromium
+and failing deep inside a login step. There is no automatic detection of "this was
+a password field" at record time - swapping in the placeholder is a manual edit,
+the same way reordering selector candidates by hand already is.
+
 Selector candidates are ranked by **robustness, not specificity**. `li.card` is preferred
 over `li.card.sc-9f8a1b`, because a build-generated hash changes on every deploy. Editing
 the order by hand is a legitimate way to harden a flow.
@@ -234,3 +253,20 @@ that field is written as `null` for that row rather than aborting. `play`/`verif
 one row per foreach iteration and write them to `sites/<id>/output.csv` by default
 (`--out <path>` to choose the path/format; `.json` writes a JSON array instead) — only if
 at least one field was tagged anywhere in the flow.
+
+### Accumulating rows across runs: `output.mode`
+
+By default (`output.mode: "overwrite"`, unchanged from before) `output.csv`/`.json` is
+replaced wholesale by each run's rows — a scheduled daily run only ever shows what the
+*most recent* run scraped. Set `output.mode: "append"` in `replayright.config.json` (or a
+site's own `flow.config`) to accumulate instead: every run's rows are appended to
+`sites/<id>/output.records.jsonl` (the durable source of truth, independent of wherever
+`--out`/`output.path` points), and `output.csv`/`.json` is rewritten as the full
+accumulated set on every run.
+
+`output.dedupeKey` (an array of `extract` field names, e.g. `["Title", "URL"]`) tells
+append mode which rows are "the same item" across runs — a later run's row with a
+matching key **replaces** the earlier one (the freshest scrape wins), instead of piling
+up near-duplicates for a listing that's simply still there. With no `dedupeKey`, dedupe
+falls back to exact whole-row equality: identical rows collapse, anything that changed
+is kept as an additional row.

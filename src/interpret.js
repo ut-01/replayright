@@ -15,6 +15,7 @@ const fs = require('fs');
 const path = require('path');
 const { chromium } = require('playwright');
 const candidates = require('./candidates');
+const { resolveSecrets } = require('./secrets');
 const { sleep, randomDelay, logInfo, logWarn, logError, EVENT } = require('./log');
 const {
   REPEAT_DEFAULT_TIMES,
@@ -50,7 +51,7 @@ function newStats() {
 // Applies one action to an already-resolved locator. Field names come straight from
 // Playwright's api-mode action objects, confirmed by dumping them in the Phase 1
 // spike: click{clickCount,button}, fill{text}, press{key}, select{options}.
-async function applyAction(locator, action) {
+async function applyAction(locator, action, env = process.env) {
   switch (action.name) {
     case 'click':
       if (action.clickCount === 2) return locator.dblclick();
@@ -61,7 +62,10 @@ async function applyAction(locator, action) {
     case 'uncheck':
       return locator.uncheck();
     case 'fill':
-      return locator.fill(action.text ?? '');
+      // Resolves any `{{env:NAME}}` placeholder a recorded password was hand-edited
+      // into (see secrets.js) - a literal value with no placeholder in it passes
+      // through untouched.
+      return locator.fill(resolveSecrets(action.text ?? '', env));
     case 'press':
       return locator.press(action.key ?? '');
     case 'select':
@@ -260,7 +264,7 @@ async function runAction(step, ctx) {
     ctx.detailRef.ownTab = false;
   }
 
-  await applyAction(locator, action);
+  await applyAction(locator, action, ctx.opts.env);
   ctx.stats.actions += 1;
   ctx.stats.steps.push({ path: ctx.path, kind: 'action', action: action.name, selector, candidateIndex, status: 'ok' });
 
@@ -550,6 +554,10 @@ async function runFlow(flow, options = {}) {
     // and any direct runFlow() call) -> HARD_LOOP_CEILING alone, exactly today's
     // behaviour. cli.js passes config.repeat.maxTimes (default 50) here once loaded.
     repeatMaxTimes: options.repeatMaxTimes ?? HARD_LOOP_CEILING,
+    // Overridable in tests without mutating process.env; every real caller leaves
+    // this unset and gets the real environment, which is what a fill step's
+    // {{env:NAME}} placeholder (see secrets.js) resolves against.
+    env: options.env ?? process.env,
   };
 
   const stats = newStats();
