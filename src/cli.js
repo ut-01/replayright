@@ -187,6 +187,17 @@ function runFlowOptionsFrom(config) {
   };
 }
 
+// Where the default (non-append) output mode should stream rows to AS THE RUN
+// HAPPENS, rather than buffering every row and writing once at the end - see
+// interpret.js's chunkWriter. Append mode is deliberately left out: its dedupe merge
+// (writeConfiguredOutput, below) needs the complete picture of this run's records
+// alongside the prior JSONL history, so it keeps writing in one shot at the end.
+function streamingOutputOptionsFrom(config, siteId) {
+  if (config.output.mode === 'append') return {};
+  const outputPath = resolveOutputPath(config, siteId);
+  return { outputPath, outputFormat: resolveOutputFormat(config, outputPath) };
+}
+
 // Build site paths (flow.json, actions, failures dir) for a given sites directory.
 // This wraps record.js's sitePaths but uses a resolved sitesDir from config instead of
 // the hardcoded REPO_ROOT/sites.
@@ -219,7 +230,14 @@ function sitePaths(siteId, sitesDir) {
 // output.path/`--out` points, since that can be redirected anywhere while the JSONL
 // history must stay a stable per-site artifact (same directory as flow.json,
 // fingerprint.json, history.jsonl).
-function writeConfiguredOutput(config, siteId, records, siteDir) {
+// `streamed` is true once the caller already passed streamingOutputOptionsFrom()'s
+// outputPath/outputFormat into runFlow/verifyFlow - in that case interpret.js's
+// chunkWriter already wrote the file progressively during the run, and re-building
+// it here from the fully-buffered `records` would just redo that work (harmlessly -
+// the content would be identical - but it's exactly the "hold everything, write
+// once" pattern this was meant to avoid). Append mode is never streamed: its dedupe
+// merge needs `records` (this run's rows) alongside the prior JSONL history anyway.
+function writeConfiguredOutput(config, siteId, records, siteDir, streamed = false) {
   const outPath = resolveOutputPath(config, siteId);
   const format = resolveOutputFormat(config, outPath);
 
@@ -239,8 +257,10 @@ function writeConfiguredOutput(config, siteId, records, siteDir) {
   }
 
   if (!records || !records.length) return null;
-  fs.mkdirSync(path.dirname(outPath), { recursive: true });
-  fs.writeFileSync(outPath, format === 'json' ? toJson(records) : toCsv(records));
+  if (!streamed) {
+    fs.mkdirSync(path.dirname(outPath), { recursive: true });
+    fs.writeFileSync(outPath, format === 'json' ? toJson(records) : toCsv(records));
+  }
   return outPath;
 }
 
@@ -372,10 +392,12 @@ async function cmdVerify(args) {
       headless: verifyHeadless,
       artifactsDir: sitePaths(args.id, resolvedSitesDir).failures,
       ...runFlowOptionsFrom(configWithCliArgs),
+      ...streamingOutputOptionsFrom(configWithCliArgs, args.id),
     });
 
-    const written = writeConfiguredOutput(configWithCliArgs, args.id, stats.records, sitePaths(args.id, resolvedSitesDir).dir);
+    const written = writeConfiguredOutput(configWithCliArgs, args.id, stats.records, sitePaths(args.id, resolvedSitesDir).dir, true);
     if (written) logInfo(`wrote ${stats.records.length} row(s) to ${path.relative(process.cwd(), written)}`, { event: EVENT.OUTPUT_WRITTEN, path: written });
+    if (stats.emptyRecordsSkipped) logInfo(`skipped ${stats.emptyRecordsSkipped} fully-empty row(s) (rows with at least one field are kept)`);
 
     if (!ok) process.exitCode = 1;
 
@@ -413,7 +435,12 @@ async function cmdPlay(args) {
   // headless UNLESS this site was auto-detected (or --requires-headed'd, at record/verify
   // time) as needing headed mode - see headless-probe.js.
   const { stats, fingerprint } = await withPage(args.headless ?? !flow.requiresHeaded, async (page) => {
-    const runStats = await runFlow(flow, { page, artifactsDir: paths.failures, ...runFlowOptionsFrom(configWithCliArgs) });
+    const runStats = await runFlow(flow, {
+      page,
+      artifactsDir: paths.failures,
+      ...runFlowOptionsFrom(configWithCliArgs),
+      ...streamingOutputOptionsFrom(configWithCliArgs, args.id),
+    });
     // Captured while the browser is still open and sitting on the final page.
     return { stats: runStats, fingerprint: await drift.captureFingerprint(page, flow, runStats) };
   }, { display: configWithCliArgs.display.mode, screen: configWithCliArgs.display.screen }, configWithCliArgs.browser.args);
@@ -423,8 +450,9 @@ async function cmdPlay(args) {
   for (const w of stats.warnings) logWarn(`${w.path} ${w.type}: ${w.message}`, { event: EVENT.STEP_WARNING, path: w.path });
   for (const e of stats.errors) logError(`${e.path} ${e.type}: ${e.message}`, { event: EVENT.STEP_FAILED, path: e.path });
 
-  const written = writeConfiguredOutput(configWithCliArgs, args.id, stats.records, paths.dir);
+  const written = writeConfiguredOutput(configWithCliArgs, args.id, stats.records, paths.dir, true);
   if (written) logInfo(`wrote ${stats.records.length} row(s) to ${path.relative(process.cwd(), written)}`, { event: EVENT.OUTPUT_WRITTEN, path: written });
+  if (stats.emptyRecordsSkipped) logInfo(`skipped ${stats.emptyRecordsSkipped} fully-empty row(s) (rows with at least one field are kept)`);
 
   const previous = drift.loadPreviousFingerprint(args.id, resolvedSitesDir);
   const { status, issues } = drift.classifyDrift(previous, fingerprint);

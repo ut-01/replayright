@@ -85,6 +85,9 @@ function printReport({ shapeProblems, advisories, stats }) {
   logInfo(`steps executed:      ${stats.actions}`);
   logInfo(`repeat iterations:   ${stats.repeatIterations}`);
   logInfo(`foreach iterations:  ${stats.foreachIterations}`);
+  if (stats.emptyRecordsSkipped) {
+    logInfo(`empty rows skipped:  ${stats.emptyRecordsSkipped} (rows with at least one field are kept)`);
+  }
 
   if (stats.fallbacks.length) {
     logWarn(`${stats.fallbacks.length} step(s) survived only on a FALLBACK selector:`);
@@ -113,6 +116,12 @@ async function verifyFlow(flow, options = {}) {
     settleTimeoutMs: options.settleTimeoutMs,
     repeatDefaultTimes: options.repeatDefaultTimes,
     repeatMaxTimes: options.repeatMaxTimes,
+    // Also pass-through only - set by cli.js (streamingOutputOptionsFrom) for the
+    // default output mode so rows stream to disk during the run; absent for every
+    // caller that doesn't know about it, which still gets everything via stats.records.
+    outputPath: options.outputPath,
+    outputFormat: options.outputFormat,
+    chunkBytesLimit: options.chunkBytesLimit,
   });
 
   printReport({ shapeProblems, advisories, stats });

@@ -18,6 +18,7 @@ const path = require('path');
 const { chromium } = require('playwright');
 const candidates = require('./candidates');
 const { resolveSecrets } = require('./secrets');
+const { createChunkedWriter } = require('./output');
 const { sleep, randomDelay, logInfo, logWarn, logError, EVENT } = require('./log');
 const {
   REPEAT_DEFAULT_TIMES,
@@ -28,6 +29,7 @@ const {
   SETTLE_TIMEOUT_MS,
   RESOLVE_WAIT_MS,
   CHROMIUM_ARGS,
+  CHUNK_BYTES_LIMIT,
 } = require('./constants');
 
 // Actions Playwright records that describe the recording session itself rather than
@@ -47,7 +49,57 @@ function newStats() {
     // runExtract / runForeach below). Rows from every nested repeat/foreach share this
     // single list - output.js turns it into CSV/JSON.
     records: [],
+    // A row where every tagged field came back null (the header/spacer rows a raw
+    // "tr" item selector tends to sweep up alongside real data - see the field
+    // resolution comment in runForeach) carries no information, so it is dropped
+    // rather than written as a blank line. A row with SOME fields populated and
+    // others null is kept as-is - only a row that is null across the board is
+    // considered "empty" here.
+    emptyRecordsSkipped: 0,
   };
+}
+
+// True when every value on a record is null/undefined/empty-string - i.e. nothing
+// about this row resolved to anything, so it's noise (a header row, a spacer row)
+// rather than a real but partially-missing item.
+function isEmptyRecord(record) {
+  return Object.values(record).every((v) => v === null || v === undefined || v === '');
+}
+
+// Every `extract` step's key anywhere in the flow, first-seen order, walked
+// statically before any page loads. A streamed CSV/JSON file commits its column set
+// with the very first chunk written to disk, so - unlike output.js's toCsv(), which
+// can freely discover columns from the full in-memory record set - the chunked
+// writer needs the complete key list up front, from the flow's own shape rather than
+// from data it hasn't seen yet.
+function collectExtractKeys(steps) {
+  const keys = [];
+  const seen = new Set();
+  const walk = (list) => {
+    for (const step of list || []) {
+      if (step.kind === 'extract' && !seen.has(step.key)) {
+        seen.add(step.key);
+        keys.push(step.key);
+      }
+      if (step.body) walk(step.body);
+    }
+  };
+  walk(steps);
+  return keys;
+}
+
+// Moves whatever is pending into the chunk writer. `force` is used at a natural
+// boundary (the end of a repeat iteration/"page", or the run finishing) where
+// whatever has accumulated should go out regardless of size; without `force`, a
+// pending chunk is only flushed once it reaches the configured byte budget - the
+// fallback for a flow with no repeat block (or one page whose own row count is
+// large enough to matter on its own).
+function maybeFlushChunk(stats, opts, { force = false } = {}) {
+  if (!opts.chunkWriter || !stats._pending.length) return;
+  if (!force && stats._pendingBytes < opts.chunkBytesLimit) return;
+  opts.chunkWriter.writeChunk(stats._pending);
+  stats._pending = [];
+  stats._pendingBytes = 0;
 }
 
 // Applies one action to an already-resolved locator. Field names come straight from
@@ -464,6 +516,12 @@ async function runRepeat(step, ctx) {
       await handleError(iterCtx, err, `repeat-${i}`);
     }
     ctx.stats.repeatIterations += 1;
+    // A repeat iteration is a page - the chunk boundary a paginated flow's output
+    // should preferably flush on (see CHUNK_BYTES_LIMIT's comment for the fallback
+    // when there's no repeat block at all). Forced regardless of how small the page's
+    // own byte count is, since "flush every page" is the point, not "flush once
+    // pages add up to ~1MB".
+    maybeFlushChunk(ctx.stats, ctx.opts, { force: true });
 
     if (repeatExit?.done) {
       logInfo(`${ctx.path}repeat: stopping after ${i + 1} iteration(s) - nothing left to advance to`, { path: ctx.path });
@@ -624,8 +682,20 @@ async function runForeach(step, ctx) {
       }
       // Pushed regardless of whether the iteration succeeded - a row with some fields
       // still null (because the body errored before reaching them) is more useful to a
-      // caller than a silently missing row.
-      if (iterCtx.record) ctx.stats.records.push(iterCtx.record);
+      // caller than a silently missing row. A row that is null across every field,
+      // though, carries nothing at all (see isEmptyRecord) and is dropped rather than
+      // written out - only counted, so a run's report can still say how many were
+      // swept aside.
+      if (iterCtx.record) {
+        if (isEmptyRecord(iterCtx.record)) {
+          ctx.stats.emptyRecordsSkipped += 1;
+        } else {
+          ctx.stats.records.push(iterCtx.record);
+          ctx.stats._pending.push(iterCtx.record);
+          ctx.stats._pendingBytes += JSON.stringify(iterCtx.record).length;
+          maybeFlushChunk(ctx.stats, ctx.opts);
+        }
+      }
     }
   }
 
@@ -700,11 +770,22 @@ async function runFlow(flow, options = {}) {
     // this unset and gets the real environment, which is what a fill step's
     // {{env:NAME}} placeholder (see secrets.js) resolves against.
     env: options.env ?? process.env,
+    // Only set up when the caller (cli.js, for the default non-append output mode -
+    // see writeConfiguredOutput) hands over where to stream rows as they're produced.
+    // Left null for every other caller (tests, record.js's self-verify, append-mode
+    // runs), which still get the complete row set back via stats.records exactly as
+    // before - this is additive, not a replacement for that.
+    chunkWriter: options.outputPath
+      ? createChunkedWriter(options.outputPath, options.outputFormat || 'csv', collectExtractKeys(flow.steps))
+      : null,
+    chunkBytesLimit: options.chunkBytesLimit ?? CHUNK_BYTES_LIMIT,
   };
 
   const stats = newStats();
   stats.consecutiveErrors = 0;
   stats._fallbackKeys = new Set();
+  stats._pending = [];
+  stats._pendingBytes = 0;
 
   let browser = null;
   let page = options.page ?? null;
@@ -723,6 +804,13 @@ async function runFlow(flow, options = {}) {
     if (!err.fatal) throw err;
     stats.aborted = err.message;
   } finally {
+    // Whatever never crossed a page boundary or hit the byte threshold still needs to
+    // reach disk - including on an aborted run, so a kill mid-way through loses only
+    // the current in-flight chunk rather than every row scraped so far.
+    maybeFlushChunk(stats, opts, { force: true });
+    opts.chunkWriter?.close();
+    delete stats._pending;
+    delete stats._pendingBytes;
     delete stats._fallbackKeys;
     if (browser) await browser.close().catch(() => {});
   }
@@ -730,4 +818,4 @@ async function runFlow(flow, options = {}) {
   return stats;
 }
 
-module.exports = { runFlow, applyAction, runSteps };
+module.exports = { runFlow, applyAction, runSteps, collectExtractKeys, isEmptyRecord };

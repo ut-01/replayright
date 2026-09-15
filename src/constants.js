@@ -84,4 +84,12 @@ module.exports = {
   // response before treating the site as bot-protected. Kept well under a typical CI/cron
   // job's own timeout, since this runs once per record/verify, not per item.
   HEADLESS_PROBE_TIMEOUT_MS: 10000,
+
+  // Output rows are flushed to disk a "page" (one repeat iteration) at a time - the
+  // natural chunk boundary for a paginated flow. A flow with no repeat block (or a
+  // single page whose own row count is huge) has no such boundary to wait for, so this
+  // is the fallback: flush whenever the buffered-but-not-yet-written rows reach ~1MB,
+  // rather than holding an unbounded amount of scraped data in memory until the run
+  // ends.
+  CHUNK_BYTES_LIMIT: 1_000_000,
 };

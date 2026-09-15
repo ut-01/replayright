@@ -94,13 +94,19 @@
 
 .pr-row {
   display: flex;
+  /* Follow the host's own row/column choice (set inline by overlay.js's
+     applyOrientation()) instead of always laying out as a row - flex-direction
+     isn't an inherited CSS property by default, so this needs the explicit
+     `inherit` to pick up the host's value. */
+  flex-direction: inherit;
   gap: 8px;
 }
 
 .pr-btn {
   position: relative;
-  width: 44px;
-  height: 44px;
+  /* 25% smaller than the original 44px, text/icon sizes unchanged. */
+  width: 33px;
+  height: 33px;
   border-radius: 50%;
   border: 2px solid var(--pr-accent);
   background: var(--pr-bg);
@@ -140,7 +146,10 @@
 }
 
 .pr-btn:hover {
-  background: var(--pr-accent-tint);
+  /* A slight shade shift over the solid button background, not a swap to a
+     translucent tint - mixing onto --pr-bg keeps it opaque instead of letting
+     the page behind show through. */
+  background: color-mix(in srgb, var(--pr-bg) 88%, var(--pr-accent) 12%);
   transform: translateY(-1px);
   box-shadow: 0 4px 10px rgba(0, 0, 0, .16);
 }
@@ -201,7 +210,7 @@
 }
 
 .pr-pill:hover {
-  background: var(--pr-accent-f-tint);
+  background: color-mix(in srgb, var(--pr-bg) 88%, var(--pr-accent-f) 12%);
   transform: translateY(-1px);
 }
 
