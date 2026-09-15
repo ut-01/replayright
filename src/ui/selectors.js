@@ -183,24 +183,126 @@ function relativeCandidates(el, root) {
   return out;
 }
 
-// --- parent-climb (picker enhancement) --------------------------------------
+// --- level stepper (picker enhancement) -------------------------------------
 //
-// Pure ancestor walk, entirely separate from chooseItem()'s own ancestor search
-// (repeatingLevels) - this is a manual override layered on top of the picker, not a
-// change to how any pick is scored. overlay.js's picker uses it to turn "the user
-// clicked the same element again" into "climb one level further out," for the case
-// where a child and its parent occupy nearly the same screen space and hit-testing
-// (elementFromPoint) can only ever return the innermost one.
-//
-// Stops at <html> rather than climbing into it - <html> is never a usable container,
-// item, or field target.
-function ancestorAt(el, depth) {
-  let node = el;
-  for (let i = 0; i < depth; i += 1) {
-    if (!node || !node.parentElement || node.parentElement.tagName === 'HTML') break;
+// elementFromPoint() only ever returns the INNERMOST element under the cursor, so an
+// element whose children tile it completely - a <tr> under its <td>s, a gapless <ul>
+// under its <li>s - can never be clicked directly. overlay.js's picker works around
+// that with a level stepper: a click freezes on the hit element and the user steps
+// up/down the linear ancestor chain built here. These are pure helpers, entirely
+// separate from chooseItem()'s own ancestor search (repeatingLevels) - a manual
+// override layered on top of the picker, not a change to how any pick is scored.
+
+// Ancestor-or-self chain from `raw` up to `top` (inclusive), innermost first. Never
+// climbs into <html> - it is never a usable container, item, or field target - so the
+// chain ends at <body> at the latest. Returns null when `top` is not an ancestor-or-self
+// of `raw`: the caller's own "that is not inside X" error path owns that case.
+function levelChain(raw, top) {
+  const chain = [];
+  let node = raw;
+  while (node && node.nodeType === 1 && node.tagName !== 'HTML') {
+    chain.push(node);
+    if (node === top) return chain;
     node = node.parentElement;
   }
-  return node;
+  return null;
+}
+
+// Can `el` be clicked DIRECTLY, i.e. is it the top hit-test result over a real area of
+// its own box? `hitTest(x, y)` is injected (the picker supplies one that looks through
+// its own layer) so this stays pure and batchable - the caller toggles the picker's
+// pointer-events once for the whole sample, not once per point.
+//
+// Biased towards "not reachable" on purpose: a wrong "unreachable" only costs the user
+// one extra confirm in the stepper, while a wrong "reachable" brings back the original
+// bug. So a sample only counts when a small cross around it (±3px) also hits `el` -
+// a 1px border gap between children is not a click target anyone can actually use.
+// Only the part of the box inside the viewport can be sampled; that is all a user can
+// click anyway.
+//
+// Where the samples go matters more than how many there are: the clickable area of a
+// parent is almost always its padding (a strip just inside each edge) or the gap
+// between its children, and a uniform grid over a big box steps right over an 8px
+// margin. So: points 4px inside every edge, the midpoint of every gap between adjacent
+// direct children, then a coarse grid as a catch-all. Arithmetic pre-filtering skips
+// any point already inside a child's box, so only plausible points pay for a hit test.
+function isHitReachable(el, hitTest) {
+  const r = el.getBoundingClientRect();
+  const left = Math.max(0, r.left);
+  const top = Math.max(0, r.top);
+  const right = Math.min(window.innerWidth, r.right);
+  const bottom = Math.min(window.innerHeight, r.bottom);
+  const w = right - left;
+  const h = bottom - top;
+  if (w < 1 || h < 1) return false;
+
+  const childRects = Array.from(el.children)
+    .map((c) => c.getBoundingClientRect())
+    .filter((c) => c.width > 0 && c.height > 0);
+  const insideChild = (x, y) => childRects.some((c) => x >= c.left && x < c.right && y >= c.top && y < c.bottom);
+
+  const points = [];
+  const along = (from, to) => {
+    const out = [];
+    const n = Math.max(1, Math.min(24, Math.floor((to - from) / 16)));
+    for (let i = 0; i < n; i += 1) out.push(from + ((i + 0.5) * (to - from)) / n);
+    return out;
+  };
+  for (const x of along(left, right)) { points.push([x, top + 4], [x, bottom - 4]); }
+  for (const y of along(top, bottom)) { points.push([left + 4, y], [right - 4, y]); }
+  for (let i = 1; i < childRects.length; i += 1) {
+    const a = childRects[i - 1];
+    const b = childRects[i];
+    points.push([(a.right + b.left) / 2, (Math.max(a.top, b.top) + Math.min(a.bottom, b.bottom)) / 2]);
+    points.push([(Math.max(a.left, b.left) + Math.min(a.right, b.right)) / 2, (a.bottom + b.top) / 2]);
+  }
+  const cols = Math.max(1, Math.min(8, Math.floor(w / 8)));
+  const rows = Math.max(1, Math.min(8, Math.floor(h / 8)));
+  for (let row = 0; row < rows; row += 1) {
+    for (let col = 0; col < cols; col += 1) points.push([left + ((col + 0.5) * w) / cols, top + ((row + 0.5) * h) / rows]);
+  }
+
+  const hits = (x, y) => x >= left && x < right && y >= top && y < bottom && !insideChild(x, y) && hitTest(x, y) === el;
+  for (const [x, y] of points) {
+    if (hits(x, y) && hits(x - 3, y) && hits(x + 3, y) && hits(x, y - 3) && hits(x, y + 3)) return true;
+  }
+  return false;
+}
+
+// <body> routinely holds a dozen <script>s; none of them is a list.
+const NON_VISUAL = new Set(['SCRIPT', 'STYLE', 'LINK', 'META', 'TEMPLATE', 'NOSCRIPT']);
+
+// Largest group of same-tag DIRECT children - "does this look like a list container,
+// and of what". { tag, count }, count 0 when nothing repeats at this level.
+function repeatingChildren(el) {
+  const byTag = new Map();
+  for (const child of el.children) {
+    if (NON_VISUAL.has(child.tagName)) continue;
+    byTag.set(child.tagName, (byTag.get(child.tagName) || 0) + 1);
+  }
+  let best = { tag: null, count: 0 };
+  for (const [tag, count] of byTag) if (count >= 2 && count > best.count) best = { tag: tag.toLowerCase(), count };
+  return best;
+}
+
+// Whether anything repeats anywhere below `el` (bounded, so a huge page cannot stall a
+// click). The container pick only BOUNDS chooseItem's search - the repeating unit is
+// often nested well below it - so this, not repeatingChildren(), is the validity test.
+function hasRepeatingDescendant(el) {
+  const nodes = el.querySelectorAll('*');
+  const limit = Math.min(nodes.length, 3000);
+  for (let i = 0; i < limit; i += 1) {
+    if (nodes[i].children.length >= 2 && repeatingChildren(nodes[i]).count >= 2) return true;
+  }
+  return repeatingChildren(el).count >= 2;
+}
+
+// Short human label for a breadcrumb: tag plus id, or tag plus first meaningful class.
+function levelLabel(el) {
+  const tag = el.tagName.toLowerCase();
+  if (el.id) return (tag + '#' + el.id).slice(0, 28);
+  const cls = Array.from(el.classList).find((c) => !HASH_LIKE.test(c));
+  return (cls ? tag + '.' + cls : tag).slice(0, 28);
 }
 
 // --- choosing the repeating unit -------------------------------------------
@@ -285,11 +387,16 @@ function siblingMatchInfo(el) {
   return { tag: el.tagName.toLowerCase(), matched, total };
 }
 
-function chooseItem(clicked, parentEl) {
+// `opts.pinned`: the user explicitly chose `clicked` as the repeating unit in the
+// picker's level stepper, so evaluate ONLY that level instead of searching outward for
+// the outermost exact one. Without it (every single-click pick) this is unchanged.
+function chooseItem(clicked, parentEl, opts) {
   const occurrence = occurrenceCount(clicked, parentEl);
   const scored = [];
+  let levels = repeatingLevels(clicked, parentEl);
+  if (opts && opts.pinned) levels = levels.filter((level) => level === clicked);
 
-  for (const level of repeatingLevels(clicked, parentEl)) {
+  for (const level of levels) {
     const rels = relativeCandidates(clicked, level);
     if (!rels.length) continue;
     const cands = itemCandidates(level, parentEl).filter((c) => atMostOnePerItem(parentEl, c.selector, rels[0]));

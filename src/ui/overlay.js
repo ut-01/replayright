@@ -166,6 +166,34 @@ function installOverlay(config, html, css) {
         + 'background:rgba(255,51,102,.92);color:#fff;'
         + 'font:11px/1.3 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;'
         + 'font-weight:600;padding:3px 6px;border-radius:4px;white-space:nowrap;display:none;}'
+      + '.pr-pick-box{position:fixed;pointer-events:none;box-sizing:border-box;display:none;'
+        + 'border:2px solid #ff3366;background:rgba(255,51,102,.1);border-radius:2px;}'
+      + '.pr-level-panel{position:fixed;box-sizing:border-box;max-width:min(460px,calc(100vw - 16px));'
+        + 'padding:10px 12px;border-radius:8px;background:rgba(17,17,17,.96);color:#fff;'
+        + 'box-shadow:0 4px 16px rgba(0,0,0,.35);pointer-events:auto;cursor:default;text-align:left;'
+        + 'font:12px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;}'
+      + '.pr-level-panel[hidden]{display:none;}'
+      + '.pr-level-panel button{all:unset;box-sizing:border-box;cursor:pointer;border-radius:4px;'
+        + 'font:inherit;color:#fff;}'
+      + '.pr-level-panel button:focus-visible{outline:2px solid #0a84ff;outline-offset:1px;}'
+      + '.pr-level-panel button:disabled{opacity:.35;cursor:default;}'
+      + '.pr-level-reason{color:rgba(255,255,255,.75);margin-bottom:6px;}'
+      + '.pr-level-crumbs{display:flex;flex-wrap:wrap;align-items:center;gap:2px 4px;margin-bottom:8px;'
+        + 'font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;}'
+      + '.pr-level-crumb{padding:1px 5px;background:rgba(255,255,255,.08);}'
+      + '.pr-level-crumb:hover{background:rgba(255,255,255,.18);}'
+      + '.pr-level-crumb.is-current{background:#ff3366;font-weight:600;}'
+      + '.pr-level-sep{color:rgba(255,255,255,.4);}'
+      + '.pr-level-actions{display:flex;align-items:center;gap:6px;}'
+      + '.pr-level-actions button{padding:4px 9px;background:rgba(255,255,255,.12);}'
+      + '.pr-level-actions button:not(:disabled):hover{background:rgba(255,255,255,.22);}'
+      + '.pr-level-actions .pr-level-use{background:#34c759;color:#000;font-weight:600;}'
+      + '.pr-level-actions .pr-level-use:not(:disabled):hover{background:#5ad67d;}'
+      + '.pr-level-spacer{flex:1;}'
+      + '.pr-level-info{margin-top:8px;word-break:break-word;}'
+      + '.pr-level-info--good{color:#8ef0a8;}'
+      + '.pr-level-info--warn{color:#ffd60a;}'
+      + '.pr-level-info--bad{color:#ff8a80;}'
       + '.pr-settings-panel{position:fixed;z-index:2147483646;background:rgba(17,17,17,.96);'
         + 'color:#fff;border-radius:8px;padding:12px;box-shadow:0 4px 16px rgba(0,0,0,.35);'
         + 'font:12px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;'
@@ -239,105 +267,339 @@ function installOverlay(config, html, css) {
   // browser's hit-testing level regardless of which shadow tree that content lives in,
   // and it is transient chrome rather than part of the overlay's own visual design, so
   // it keeps the same inline-styled construction the rest of the chrome moved away
-  // from. Its two children - the cursor-following instruction label and the
-  // tag/count hover badge - are Phase 2.2's "armed state" and "hover outline"
-  // affordances; both ride along for free on the picker's existing lifecycle
+  // from. Its children - the cursor-following instruction label, the tag/count hover
+  // badge and the highlight box - ride along on the picker's lifecycle
   // (openPicker/closePicker), so there is nothing extra to leak on cancel.
+  //
+  // The highlight is a separate positioned box, not an outline painted onto the site's
+  // own element: an outline/background on a <tr> is routinely invisible (the <td>s paint
+  // over it), and rows are exactly the case the level stepper below exists for. It also
+  // means picking never mutates the recorded page's inline styles.
   let picker = null;
-  let outlined = null;
   let cursorLabel = null;
   let hoverBadge = null;
+  let hoverBox = null;
+  let pickStage = null;
+  let lastPointer = null;
+  let hoverRaw = null;
+  let hoverShown = null;
+  let hoverHint = '';
 
-  // --- parent-climb: manual override on top of the picker, not inside it ------
+  // --- level stepper: reaching elements that cannot be clicked directly ----------
   //
-  // Container picks, item picks and field picks all share this one picker mechanism,
-  // and all three can hit the same problem: elementFromPoint() only ever returns the
-  // INNERMOST element under the cursor, so when a child and its parent occupy nearly
-  // the same screen space there is no way to click the parent directly - every click
-  // at that spot keeps landing on the child.
+  // elementFromPoint() only ever returns the INNERMOST element under the cursor, so an
+  // element completely tiled by its children - a <tr> under its <td>s, a gapless <ul>
+  // under its <li>s - has no pixel of its own to click. Container, item and field picks
+  // all share this picker, and all three can hit that.
   //
-  // The fix: clicking the SAME already-selected element again climbs one level up the
-  // ancestor chain (via selectors.js#ancestorAt) instead of re-selecting the same
-  // element. `climbAnchor` is the raw (unclimbed) elementFromPoint() result from the
-  // most recent click; `climbDepth` is how many levels have been climbed FROM that
-  // anchor so far. A click at a genuinely different position never matches the anchor,
-  // so it always resets to a fresh, un-climbed pick - existing single-click flows (every
-  // test recorded before this feature existed) are unaffected byte-for-byte.
+  // So a click normally commits exactly as it always has, but FREEZES instead - opening
+  // a stepper panel over the frozen element - when help is actually needed:
+  //   - the clicked element's parent (within the stage's bounds) cannot be hit directly
+  //     (selectors.js#isHitReachable), i.e. there is a level the user physically cannot
+  //     click; or
+  //   - the stage's own validation would reject/doubt the pick (stage.needsHelp); or
+  //   - the user Shift-clicked, which always opens it.
+  // Padded, well-formed markup therefore still commits on one click, byte-for-byte as
+  // before. In the stepper the user walks the linear ancestor chain (selectors.js#
+  // levelChain): down stops at the element actually clicked, up at the stage's bound
+  // (<body> for a container, the child of the container for an item, the item itself
+  // for a field), with a live validation line for the level currently selected.
   //
-  // Deliberately NOT reset by openPicker()/closePicker() - those run on every single
-  // pick stage (container, then item, then each field), and resetting there would
-  // erase the climb the moment an error handler re-opens the picker to retry the SAME
-  // stage, which is exactly when the climb matters. It resets only at a genuinely NEW
-  // arm (pressing F from idle, or pressing a field pill) - see resetClimb() call sites
-  // below - and implicitly on navigation, since the whole script (and this closure)
-  // re-runs from scratch on every page load.
-  let climbAnchor = null;
-  let climbDepth = 0;
+  // Every stepper control is a real in-page button whose aria-label is a
+  // `playright:ui:level:*` marker, so the click Playwright records against it is dropped
+  // by ir.js's existing `marker.kind === 'ui'` no-op - and the panel carries
+  // data-playright-chrome so observe() never mistakes it for a per-item body event.
+  // Keyboard (Arrow keys / Enter / Escape) is handled on a WINDOW capture listener that
+  // stops the event there: Playwright's recorder listens on `document` (capture), which
+  // comes later on the propagation path, so it never sees the key and never records a
+  // stray `press` step.
+  let levelPanel = null;
+  let frozen = null; // { raw, chain, idx, suggested, reason }
 
-  function resetClimb() {
-    climbAnchor = null;
-    climbDepth = 0;
+  // Every stage: { top(raw) -> bound element or null, preview(raw) -> element a click
+  // would select, suggest(chain, raw) -> starting index, needsHelp(raw) -> bool,
+  // hiddenMatters(raw, chain) -> whether an unclickable parent is worth stopping for
+  // (a flush page wrapper above a perfectly good list is not),
+  // describe(el, ctx) -> { tone, text, canUse }, commit(el, ctx) }. `ctx` is
+  // { raw, suggested }; a commit with el === ctx.suggested means "exactly what a plain
+  // single click would have picked".
+
+  function hitTestThroughPicker(fn) {
+    if (!picker) return fn();
+    picker.style.pointerEvents = 'none';
+    try { return fn(); } finally { picker.style.pointerEvents = 'auto'; }
   }
 
-  // Non-mutating preview for the hover badge: "what WOULD a click select right now".
-  // Hovering the anchor position shows the CURRENT climb level (not yet incremented);
-  // hovering anywhere else previews a fresh, un-climbed pick of whatever is there.
-  function climbPeek(rawEl) {
-    if (rawEl === climbAnchor) return ancestorAt(rawEl, climbDepth);
-    return rawEl;
+  function under(x, y) {
+    return hitTestThroughPicker(() => document.elementFromPoint(x, y));
   }
 
-  // Mutating: called only from the picker's click handler. Advances the climb when the
-  // click lands on the same raw element as last time, else starts a fresh climb at 0.
-  function climbFrom(rawEl) {
-    if (rawEl === climbAnchor) climbDepth += 1;
-    else { climbAnchor = rawEl; climbDepth = 0; }
-    return ancestorAt(rawEl, climbDepth);
+  function parentHidden(chain) {
+    if (!chain || chain.length < 2) return false;
+    return !hitTestThroughPicker(() => isHitReachable(chain[1], (x, y) => document.elementFromPoint(x, y)));
   }
 
-  function updateHoverBadge(el) {
+  function placeBox(el) {
+    if (!hoverBox) return null;
+    const rect = el ? el.getBoundingClientRect() : null;
+    if (!rect || (rect.width === 0 && rect.height === 0)) {
+      hoverBox.style.display = 'none';
+      return rect;
+    }
+    hoverBox.style.display = 'block';
+    hoverBox.style.left = rect.left + 'px';
+    hoverBox.style.top = rect.top + 'px';
+    hoverBox.style.width = rect.width + 'px';
+    hoverBox.style.height = rect.height + 'px';
+    return rect;
+  }
+
+  function highlight(el, hint) {
+    const rect = placeBox(el);
     if (!hoverBadge) return;
     if (!el) { hoverBadge.style.display = 'none'; return; }
     const info = siblingMatchInfo(el);
-    hoverBadge.textContent = info.tag.toUpperCase() + ' (' + info.matched + ' of ' + info.total + ')';
-    const rect = el.getBoundingClientRect();
+    const noBox = !rect || (rect.width === 0 && rect.height === 0);
+    hoverBadge.textContent = info.tag.toUpperCase() + ' (' + info.matched + ' of ' + info.total + ')'
+      + (noBox ? ' · no box' : '') + (hint ? ' · ' + hint : '');
     hoverBadge.style.display = 'block';
-    hoverBadge.style.left = Math.max(4, rect.left) + 'px';
-    hoverBadge.style.top = Math.max(4, rect.top - 22) + 'px';
+    const left = rect && !noBox ? rect.left : (lastPointer ? lastPointer.x : 4);
+    const top = rect && !noBox ? rect.top : (lastPointer ? lastPointer.y : 26);
+    hoverBadge.style.left = Math.max(4, left) + 'px';
+    hoverBadge.style.top = Math.max(4, top - 22) + 'px';
   }
 
-  function outline(el) {
-    if (outlined && outlined !== el) {
-      outlined.style.outline = outlined.__pwPrevOutline || '';
-      outlined.style.backgroundColor = outlined.__pwPrevBg || '';
+  function hoverAt(x, y) {
+    if (!picker || frozen || !pickStage) return;
+    const raw = under(x, y);
+    if (!raw || isOurs(raw)) { hoverRaw = null; hoverShown = null; highlight(null); return; }
+    // The preview (chooseItem for an item pick) and the hidden-parent probe are only
+    // worth recomputing when the cursor reaches a different element.
+    if (raw !== hoverRaw) {
+      hoverRaw = raw;
+      hoverShown = pickStage.preview(raw) || raw;
+      const top = pickStage.top(raw);
+      const chain = top ? levelChain(raw, top) : null;
+      hoverHint = chain && pickStage.hiddenMatters(raw, chain) && parentHidden(chain) ? '⇡ ' + levelLabel(chain[1]) + ' hidden, click to choose level' : '';
     }
-    if (el && el !== outlined) {
-      el.__pwPrevOutline = el.style.outline;
-      el.__pwPrevBg = el.style.backgroundColor;
-      el.style.outline = '2px solid #ff3366';
-      // Translucent fill on top of the outline, plus the tag/count badge below -
-      // the count is the single most useful thing at pick time, and previously only
-      // showed up after committing to an item.
-      el.style.backgroundColor = 'rgba(255, 51, 102, 0.1)';
+    highlight(hoverShown, hoverHint);
+  }
+
+  function ensureLevelPanel() {
+    ensureChromeStyle();
+    if (levelPanel) return;
+    levelPanel = document.createElement('div');
+    levelPanel.className = 'pr-level-panel';
+    levelPanel.setAttribute('data-pr', 'level-panel');
+    levelPanel.setAttribute('data-playright-chrome', '');
+    levelPanel.hidden = true;
+    levelPanel.innerHTML = '<div class="pr-level-reason" data-pr="level-reason"></div>'
+      + '<div class="pr-level-crumbs" data-pr="level-crumbs"></div>'
+      + '<div class="pr-level-actions">'
+      + '<button type="button" data-pr="level-up" aria-label="' + PREFIX + 'ui:level:up" title="Select the parent (Arrow Up)"><span aria-hidden="true">▲ Parent</span></button>'
+      + '<button type="button" data-pr="level-down" aria-label="' + PREFIX + 'ui:level:down" title="Select the child, back towards what you clicked (Arrow Down)"><span aria-hidden="true">▼ Child</span></button>'
+      + '<span class="pr-level-spacer"></span>'
+      + '<button type="button" data-pr="level-use" class="pr-level-use" aria-label="' + PREFIX + 'ui:level:use" title="Use this element (Enter)"><span aria-hidden="true">✓ Use</span></button>'
+      + '<button type="button" data-pr="level-cancel" aria-label="' + PREFIX + 'ui:level:cancel" title="Back to picking (Escape)"><span aria-hidden="true">✕</span></button>'
+      + '</div>'
+      + '<div class="pr-level-info" data-pr="level-info"></div>';
+    applyPanelZ(levelPanel);
+    document.documentElement.appendChild(levelPanel);
+
+    levelPanel.querySelector('[data-pr="level-up"]').addEventListener('click', () => stepLevel(1));
+    levelPanel.querySelector('[data-pr="level-down"]').addEventListener('click', () => stepLevel(-1));
+    levelPanel.querySelector('[data-pr="level-use"]').addEventListener('click', () => useLevel());
+    levelPanel.querySelector('[data-pr="level-cancel"]').addEventListener('click', () => unfreeze());
+    levelPanel.querySelector('[data-pr="level-crumbs"]').addEventListener('click', (e) => {
+      const crumb = e.target.closest && e.target.closest('[data-level-idx]');
+      if (!crumb || !frozen) return;
+      frozen.idx = Number(crumb.getAttribute('data-level-idx'));
+      renderLevel();
+    });
+  }
+
+  function applyPanelZ(el) {
+    el.style.zIndex = zTier('--pr-z-pause', '2147483646');
+  }
+
+  function currentLevelInfo() {
+    const el = frozen.chain[frozen.idx];
+    if (!el.isConnected || !frozen.raw.isConnected) {
+      return { tone: 'bad', text: 'The page changed under this selection. Click the element again.', canUse: false };
     }
-    outlined = el;
-    updateHoverBadge(el);
+    return pickStage.describe(el, { raw: frozen.raw, suggested: frozen.suggested });
+  }
+
+  function renderLevel() {
+    if (!frozen || !levelPanel) return;
+    const { chain, idx } = frozen;
+    const el = chain[idx];
+
+    levelPanel.querySelector('[data-pr="level-reason"]').textContent = frozen.reason;
+
+    // Outermost on the left, like a path: body › table › tbody › [tr] › td. Long chains
+    // show a window around the current level so the panel stays one line.
+    const crumbs = levelPanel.querySelector('[data-pr="level-crumbs"]');
+    crumbs.textContent = '';
+    const hi = Math.min(chain.length - 1, Math.max(idx + 3, 6));
+    const lo = Math.max(0, Math.min(idx - 3, chain.length - 7));
+    const addSep = (text) => {
+      const sep = document.createElement('span');
+      sep.className = 'pr-level-sep';
+      sep.textContent = text;
+      crumbs.appendChild(sep);
+    };
+    if (hi < chain.length - 1) addSep('… ›');
+    for (let i = hi; i >= lo; i -= 1) {
+      const crumb = document.createElement('button');
+      crumb.type = 'button';
+      crumb.className = 'pr-level-crumb' + (i === idx ? ' is-current' : '');
+      crumb.setAttribute('data-level-idx', String(i));
+      crumb.setAttribute('aria-label', PREFIX + 'ui:level:at:' + i);
+      crumb.title = i === 0 ? 'What you clicked' : i + ' level(s) above what you clicked';
+      const text = document.createElement('span');
+      text.setAttribute('aria-hidden', 'true');
+      text.textContent = levelLabel(chain[i]);
+      crumb.appendChild(text);
+      crumbs.appendChild(crumb);
+      if (i > lo) addSep('›');
+    }
+    if (lo > 0) addSep('› …');
+
+    const info = currentLevelInfo();
+    const infoEl = levelPanel.querySelector('[data-pr="level-info"]');
+    infoEl.textContent = (info.tone === 'good' ? '✓ ' : info.tone === 'bad' ? '✕ ' : info.tone === 'warn' ? '⚠ ' : '• ') + info.text;
+    infoEl.className = 'pr-level-info pr-level-info--' + info.tone;
+
+    levelPanel.querySelector('[data-pr="level-up"]').disabled = idx >= chain.length - 1;
+    levelPanel.querySelector('[data-pr="level-down"]').disabled = idx <= 0;
+    levelPanel.querySelector('[data-pr="level-use"]').disabled = !info.canUse;
+
+    highlight(el.isConnected ? el : null, idx === 0 ? 'clicked' : '▲' + idx);
+    levelPanel.hidden = false;
+    positionLevelPanel(el);
+  }
+
+  // Below the selection when there is room, else above it, clamped into the viewport.
+  function positionLevelPanel(el) {
+    const margin = 8;
+    const panelRect = levelPanel.getBoundingClientRect();
+    const rect = el.isConnected ? el.getBoundingClientRect() : null;
+    let left = rect ? rect.left : margin;
+    let top = rect ? rect.bottom + margin : margin;
+    if (rect && top + panelRect.height > window.innerHeight - margin) top = rect.top - panelRect.height - margin;
+    left = Math.min(Math.max(margin, left), Math.max(margin, window.innerWidth - panelRect.width - margin));
+    top = Math.min(Math.max(margin, top), Math.max(margin, window.innerHeight - panelRect.height - margin));
+    levelPanel.style.left = left + 'px';
+    levelPanel.style.top = top + 'px';
+  }
+
+  function freeze(raw, chain, idx, reason) {
+    ensureLevelPanel();
+    frozen = { raw, chain, idx, suggested: chain[idx], reason };
+    if (cursorLabel) cursorLabel.style.display = 'none';
+    renderLevel();
+  }
+
+  function unfreeze() {
+    frozen = null;
+    if (levelPanel) levelPanel.hidden = true;
+    hoverRaw = null;
+    highlight(null);
+    if (lastPointer) hoverAt(lastPointer.x, lastPointer.y);
+  }
+
+  function stepLevel(delta) {
+    if (!frozen) return;
+    const next = frozen.idx + delta;
+    if (next < 0 || next >= frozen.chain.length) return;
+    frozen.idx = next;
+    renderLevel();
+  }
+
+  function useLevel() {
+    if (!frozen || !pickStage) return;
+    const info = currentLevelInfo();
+    if (!info.canUse) { renderLevel(); return; }
+    const stage = pickStage;
+    const el = frozen.chain[frozen.idx];
+    const ctx = { raw: frozen.raw, suggested: frozen.suggested };
+    closePicker();
+    stage.commit(el, ctx);
+  }
+
+  const swallowedKeys = new Set();
+  window.addEventListener('keydown', (e) => {
+    if (!frozen) return;
+    const actions = { ArrowUp: () => stepLevel(1), ArrowDown: () => stepLevel(-1), Enter: useLevel, Escape: unfreeze };
+    const act = actions[e.key];
+    if (!act) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    swallowedKeys.add(e.key);
+    act();
+  }, true);
+  window.addEventListener('keyup', (e) => {
+    if (!swallowedKeys.delete(e.key)) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+  }, true);
+
+  function onPickerClick(raw, force) {
+    const stage = pickStage;
+    const top = stage.top(raw);
+    const chain = top ? levelChain(raw, top) : null;
+    // Outside the stage's bounds: the stage's own commit path owns the error message.
+    if (!chain) { closePicker(); stage.commit(raw, { raw, suggested: raw }); return; }
+
+    const hidden = stage.hiddenMatters(raw, chain) && parentHidden(chain);
+    const doubtful = stage.needsHelp(raw);
+    if (!force && !hidden && !doubtful) {
+      closePicker();
+      stage.commit(raw, { raw, suggested: raw });
+      return;
+    }
+
+    const reason = hidden
+      ? levelLabel(chain[1]) + ' sits under what you clicked and cannot be clicked directly. Step up to reach it.'
+      : doubtful
+        ? 'That pick needs a closer look. Step up or down, then Use.'
+        : 'Choose the level to use.';
+    freeze(raw, chain, Math.min(chain.length - 1, Math.max(0, stage.suggest(chain, raw))), reason);
+  }
+
+  let viewportRaf = 0;
+  function onViewportChange() {
+    if (viewportRaf) return;
+    viewportRaf = requestAnimationFrame(() => {
+      viewportRaf = 0;
+      if (frozen) renderLevel();
+      else if (lastPointer) { hoverRaw = null; hoverAt(lastPointer.x, lastPointer.y); }
+    });
   }
 
   function closePicker() {
-    outline(null);
+    frozen = null;
+    if (levelPanel) levelPanel.hidden = true;
     if (picker) { picker.remove(); picker = null; }
+    window.removeEventListener('scroll', onViewportChange, true);
+    window.removeEventListener('resize', onViewportChange);
     cursorLabel = null;
     hoverBadge = null;
+    hoverBox = null;
+    hoverRaw = null;
+    hoverShown = null;
+    pickStage = null;
   }
 
   // `instruction` is short, imperative cursor-label copy ("Click the CONTAINER") -
   // always supplied by the F state machine below (pickParent/pickItem), never
   // hardcoded here, so it always names the actual next step rather than a generic
-  // "pick something".
-  function openPicker(instruction, onPick) {
+  // "pick something". `stage` is the per-pick policy described above.
+  function openPicker(instruction, stage) {
     closePicker();
     ensureChromeStyle();
+    pickStage = stage;
 
     picker = document.createElement('div');
     picker.setAttribute('role', 'button');
@@ -350,6 +612,10 @@ function installOverlay(config, html, css) {
     picker.style.cssText = 'position:fixed;inset:0;z-index:' + zTier('--pr-z-picker', '2147483645') + ';cursor:crosshair;'
       + 'background:radial-gradient(circle at 50% 40%, rgba(0,0,0,.05) 0%, rgba(0,0,0,.35) 85%);';
 
+    hoverBox = document.createElement('div');
+    hoverBox.className = 'pr-pick-box';
+    picker.appendChild(hoverBox);
+
     cursorLabel = document.createElement('div');
     cursorLabel.className = 'pr-cursor-label';
     cursorLabel.textContent = instruction;
@@ -359,32 +625,28 @@ function installOverlay(config, html, css) {
     hoverBadge.className = 'pr-hover-badge';
     picker.appendChild(hoverBadge);
 
-    const under = (x, y) => {
-      picker.style.pointerEvents = 'none';
-      const el = document.elementFromPoint(x, y);
-      picker.style.pointerEvents = 'auto';
-      return el;
-    };
-
     picker.addEventListener('mousemove', (e) => {
+      lastPointer = { x: e.clientX, y: e.clientY };
+      if (frozen) return;
       cursorLabel.style.display = 'block';
       cursorLabel.style.left = e.clientX + 'px';
       cursorLabel.style.top = e.clientY + 'px';
-      const el = under(e.clientX, e.clientY);
-      // Preview only - never mutates climb state. Shows the CLIMBED level when
-      // hovering back over the anchor position, so the badge is what tells the user
-      // they've climbed high enough, without needing to click to find out.
-      if (!isOurs(el)) outline(el ? climbPeek(el) : null);
+      hoverAt(e.clientX, e.clientY);
     });
 
     picker.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
-      const el = under(e.clientX, e.clientY);
-      closePicker();
-      if (el && !isOurs(el)) onPick(climbFrom(el));
+      lastPointer = { x: e.clientX, y: e.clientY };
+      const raw = under(e.clientX, e.clientY);
+      if (!raw || isOurs(raw)) return;
+      // A click while frozen is a fresh pick at the new point, under the normal rules.
+      if (frozen) { frozen = null; levelPanel.hidden = true; }
+      onPickerClick(raw, e.shiftKey);
     }, true);
 
+    window.addEventListener('scroll', onViewportChange, { capture: true, passive: true });
+    window.addEventListener('resize', onViewportChange, { passive: true });
     document.documentElement.appendChild(picker);
   }
 
@@ -429,7 +691,7 @@ function installOverlay(config, html, css) {
     fBtn.title = TITLE_F.parent;
     updateOpenStrip();
     say('F, step 1 of 2:\nClick the CONTAINER that holds the repeating items (the list or grid, not one card).\n\nThis click will not affect the site.');
-    openPicker('Click the CONTAINER', (parentEl) => {
+    const onParent = (parentEl) => {
       const parents = parentCandidates(parentEl);
       if (!parents.length) {
         say('Could not build a stable selector for that container.\nTry clicking a slightly different element (often the <ul> or the grid wrapper).', 'bad');
@@ -437,6 +699,33 @@ function installOverlay(config, html, css) {
         return;
       }
       pickItem(parentEl, parents);
+    };
+    openPicker('Click the CONTAINER', {
+      top: () => document.body,
+      preview: (raw) => raw,
+      // The level with the most same-tag children is the likeliest list (ties: the
+      // innermost), e.g. <tbody> rather than the <tr> when a <td> was clicked.
+      suggest: (chain) => {
+        let best = 0;
+        let bestCount = 1;
+        chain.forEach((el, i) => {
+          const { count } = repeatingChildren(el);
+          if (count > bestCount) { best = i; bestCount = count; }
+        });
+        return best;
+      },
+      needsHelp: (raw) => !hasRepeatingDescendant(raw),
+      // A flush parent only matters when it is a better list than what was clicked:
+      // the <tr> behind a <td>, the gapless <ul> behind an <li> - not the layout
+      // wrapper around a list that was clicked correctly.
+      hiddenMatters: (raw, chain) => repeatingChildren(chain[1]).count > repeatingChildren(raw).count,
+      describe: (el) => {
+        const direct = repeatingChildren(el);
+        if (direct.count >= 2) return { tone: 'good', text: direct.count + ' repeating <' + direct.tag + '> children', canUse: true };
+        if (hasRepeatingDescendant(el)) return { tone: 'neutral', text: 'Repeating items are nested deeper inside this', canUse: true };
+        return { tone: 'warn', text: 'Nothing repeats inside this. Step up to the list or grid.', canUse: true };
+      },
+      commit: (el) => onParent(el),
     });
   }
 
@@ -445,14 +734,16 @@ function installOverlay(config, html, css) {
     fBtn.title = TITLE_F.item;
     updateOpenStrip();
     say('F, step 2 of 2:\nNow click ONE of the repeating items inside it (one card/row).\n\nThis click will not affect the site either.');
-    openPicker('Click the ITEM', (clicked) => {
+    // `opts.pinned` only comes from the level stepper, when the user chose a level other
+    // than the one chooseItem() would have picked on its own.
+    const onItem = (clicked, opts) => {
       if (!parentEl.contains(clicked)) {
         say('That element is not inside the container you picked.\nStarting over - click the container again.', 'bad');
         pickParent();
         return;
       }
 
-      const chosen = chooseItem(clicked, parentEl);
+      const chosen = chooseItem(clicked, parentEl, opts);
       if (!chosen) {
         say('That element does not repeat inside the container in a way I can address reliably.\nPick the container again, then a genuinely repeating card/row.', 'bad');
         pickParent();
@@ -495,13 +786,65 @@ function installOverlay(config, html, css) {
         exact: chosen.exact,
         itemTag: chosen.level.tagName.toLowerCase(),
       });
+    };
+
+    // What a level resolves to: the plain single-click result at the suggested level,
+    // a pinned evaluation of exactly that element anywhere else.
+    const resolveAt = (el, ctx) => (el === ctx.suggested
+      ? chooseItem(ctx.raw, parentEl)
+      : chooseItem(el, parentEl, { pinned: true }));
+
+    let previewRaw = null;
+    let previewChosen = null;
+    const autoChoice = (raw) => {
+      if (raw !== previewRaw) { previewRaw = raw; previewChosen = chooseItem(raw, parentEl); }
+      return previewChosen;
+    };
+
+    openPicker('Click the ITEM', {
+      // Up stops at the container's direct child on the clicked path - the container
+      // itself can never be its own repeating item.
+      top: (raw) => {
+        if (raw === parentEl || !parentEl.contains(raw)) return null;
+        let node = raw;
+        while (node.parentElement !== parentEl) node = node.parentElement;
+        return node;
+      },
+      // Outline what will ACTUALLY be picked (often an ancestor), not the raw hit.
+      preview: (raw) => {
+        if (!parentEl.contains(raw) || raw === parentEl) return raw;
+        const chosen = autoChoice(raw);
+        return chosen ? chosen.level : raw;
+      },
+      suggest: (chain, raw) => {
+        const chosen = autoChoice(raw);
+        const i = chosen ? chain.indexOf(chosen.level) : -1;
+        return i >= 0 ? i : 0;
+      },
+      needsHelp: (raw) => {
+        const chosen = autoChoice(raw);
+        return !chosen || !chosen.exact;
+      },
+      // When chooseItem() already climbed above the clicked element, a flush parent of
+      // that element is beside the point; only a pick stuck AT the clicked level (a
+      // <td> standing in for its <tr>) needs the stepper.
+      hiddenMatters: (raw, chain) => {
+        const chosen = autoChoice(raw);
+        return !chosen || chain.indexOf(chosen.level) <= 0;
+      },
+      describe: (el, ctx) => {
+        const chosen = resolveAt(el, ctx);
+        if (!chosen) return { tone: 'bad', text: 'This does not repeat inside the container in a way that can be addressed.', canUse: false };
+        const via = chosen.count + ' items via ' + chosen.cands[0].selector;
+        if (chosen.exact) return { tone: 'good', text: via, canUse: true };
+        return { tone: 'warn', text: via + ', but what you clicked appears ' + chosen.occurrence.count + ' time(s)', canUse: true };
+      },
+      commit: (el, ctx) => (el === ctx.suggested ? onItem(ctx.raw) : onItem(el, { pinned: true })),
     });
   }
 
   fBtn.addEventListener('click', () => {
-    // A fresh arm from idle - not the internal retries pickParent()/pickItem() make on
-    // their own error paths - is what starts a new climb chain from scratch.
-    if (fState === 'idle') { resetClimb(); pickParent(); return; }
+    if (fState === 'idle') { pickParent(); return; }
     if (fState === 'parent' || fState === 'item') {
       say('F cancelled.', null);
       send({ type: 'F', phase: 'cancel' });
@@ -572,12 +915,25 @@ function installOverlay(config, html, css) {
 
   // `instruction` mirrors pickParent/pickItem's cursor-label style. Re-entrant: called
   // both for a fresh pill press AND by onFieldPick's own error branches to retry the
-  // SAME field - which is deliberate, since a retry at the same screen position is
-  // exactly when parent-climb (see above) needs its state to survive.
+  // SAME field.
   function armField(key) {
     fieldArmedKey = key;
     say('Field "' + key + '": click the value for this item.\n\nThis click will not affect the site.', null);
-    openPicker('Click the ' + key.toUpperCase() + ' value', onFieldPick);
+    openPicker('Click the ' + key.toUpperCase() + ' value', {
+      // Up stops at the item root itself (relative selector '').
+      top: (raw) => (fItem && (raw === fItem || fItem.contains(raw)) ? fItem : null),
+      preview: (raw) => raw,
+      suggest: () => 0,
+      needsHelp: (raw) => !relativeCandidates(raw, fItem).length,
+      hiddenMatters: () => true,
+      describe: (el) => {
+        const rel = relativeCandidates(el, fItem);
+        if (!rel.length) return { tone: 'bad', text: 'Not uniquely addressable inside the item. Step up.', canUse: false };
+        const text = textOf(el);
+        return { tone: 'good', text: (rel[0] || '(the item itself)') + (text ? '  →  ' + JSON.stringify(text) : ''), canUse: true };
+      },
+      commit: (el) => onFieldPick(el),
+    });
   }
 
   function onFieldPick(el) {
@@ -587,13 +943,13 @@ function installOverlay(config, html, css) {
       return;
     }
     if (el !== fItem && !fItem.contains(el)) {
-      say('That is not inside the current item.\nClick something inside the highlighted row.\n\n(Clicking the very same spot again climbs to its parent, if you meant the wrapper around it.)', 'bad');
+      say('That is not inside the current item.\nClick something inside the highlighted row.', 'bad');
       armField(fieldArmedKey);
       return;
     }
     const rel = relativeCandidates(el, fItem);
     if (!rel.length) {
-      say('Could not build a stable selector for that.\nTry a slightly different element, or click the same spot again to climb to its parent.', 'bad');
+      say('Could not build a stable selector for that.\nTry a slightly different element, or Shift-click to choose a parent level.', 'bad');
       armField(fieldArmedKey);
       return;
     }
@@ -605,9 +961,6 @@ function installOverlay(config, html, css) {
 
   for (const btn of fieldButtons) {
     btn.addEventListener('click', () => {
-      // A pill press is always a NEW arm (never a retry - retries call armField()
-      // directly from onFieldPick), so this is where the climb chain starts fresh.
-      resetClimb();
       armField(btn.dataset.fieldKey);
     });
   }
@@ -634,7 +987,6 @@ function installOverlay(config, html, css) {
     const label = fieldInput.value.trim();
     if (!label) return;
     fieldCustomWrap.hidden = true;
-    resetClimb(); // a custom field's first pick is a new arm too
     armField(label);
   });
 
@@ -820,23 +1172,17 @@ function installOverlay(config, html, css) {
       updateFieldsVisibility();
     },
 
-    // Diagnostic exposed purely for testing the parent-climb mechanism (see
-    // climbFrom/climbPeek above) without needing to drive a full F or field pick
-    // session end to end. Mirrors exactly what the picker's own click handler does at
-    // a given viewport point, using the SAME climb state - so this exercises the real
-    // production code path, not a parallel copy of it.
-    __debugClimbClick(x, y) {
-      const el = document.elementFromPoint(x, y);
-      if (!el) return null;
-      const effective = climbFrom(el);
+    // Diagnostic: the level stepper's current state, or null when it is not open. Read
+    // by test/picker-level.test.js; tests still DRIVE the stepper through its real
+    // buttons and keys, never through this.
+    __debugLevelState() {
+      if (!frozen) return null;
       return {
-        tag: effective.tagName.toLowerCase(),
-        id: effective.id || null,
-        depth: climbDepth,
+        labels: frozen.chain.map((el) => levelLabel(el)),
+        idx: frozen.idx,
+        current: levelLabel(frozen.chain[frozen.idx]),
+        info: currentLevelInfo(),
       };
-    },
-    __debugClimbReset() {
-      resetClimb();
     },
   };
 

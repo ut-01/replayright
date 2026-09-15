@@ -1,0 +1,47 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Flush-children fixture</title>
+  <style>
+    body { margin: 8px; font: 14px/1.4 sans-serif; }
+    /*
+      The whole point of this fixture: elements whose children tile them completely,
+      leaving no pixel of their own to click. A <tr> is entirely covered by its <td>s
+      (border-collapse removes the spacing between cells), and #gapless is entirely
+      covered by its <li>s (no list padding, no margins). elementFromPoint() can never
+      return either one - only the picker's level stepper can reach them.
+
+      The wrappers around them ARE padded, so a click on a wrapper's padding still
+      commits on a single click - that is the "only when needed" half of the design.
+    */
+    #table-wrap, #list-wrap { padding: 24px; margin-bottom: 16px; }
+    #jobs { border-collapse: collapse; width: 600px; }
+    #jobs td { border: 0; padding: 6px 10px; }
+    #gapless { list-style: none; margin: 0; padding: 0; width: 400px; }
+    #gapless li { margin: 0; padding: 6px 10px; }
+  </style>
+</head>
+<body>
+  <div id="table-wrap">
+    <table id="jobs">
+      <tbody>
+        <tr class="job"><td class="title">Frontend Engineer</td><td>Berlin</td><td><button class="apply">Apply</button></td></tr>
+        <tr class="job"><td class="title">Backend Engineer</td><td>Paris</td><td><button class="apply">Apply</button></td></tr>
+        <tr class="job"><td class="title">Data Engineer</td><td>Lisbon</td><td><button class="apply">Apply</button></td></tr>
+        <tr class="job"><td class="title">Site Reliability</td><td>Madrid</td><td><button class="apply">Apply</button></td></tr>
+        <tr class="job"><td class="title">Product Designer</td><td>Rome</td><td><button class="apply">Apply</button></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div id="list-wrap">
+    <ul id="gapless">
+      <li class="entry">Alpha</li>
+      <li class="entry">Beta</li>
+      <li class="entry">Gamma</li>
+      <li class="entry">Delta</li>
+    </ul>
+  </div>
+</body>
+</html>

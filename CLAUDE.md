@@ -99,6 +99,25 @@ lives in.
 The picker is a transparent full-viewport layer, not a document listener: the click must
 never reach the site, or picking a card navigates you away mid-recording.
 
+Hit-testing only returns the innermost element, so anything its children tile completely
+(a `<tr>` under its `<td>`s, a gapless `<ul>`) cannot be clicked. The picker's **level
+stepper** covers that: a click commits as before *unless* the clicked element's parent
+cannot be hit directly (`isHitReachable`, and only when that parent matters for the stage
+— `hiddenMatters`), the stage's validation doubts the pick (`needsHelp`), or it was a
+Shift-click. Then the click freezes and a panel walks `levelChain(raw, stage.top(raw))`
+with a live validation line. Each pick stage (container / item / field) is a policy object
+passed to `openPicker(instruction, stage)`. Invariants:
+- A single-click commit calls the stage's commit with the **raw** element, exactly as
+  before; only the stepper can hand over another level. An item level other than
+  `chooseItem`'s own choice is committed with `chooseItem(el, parent, { pinned: true })`.
+- Stepper buttons are `playright:ui:level:*` markers (dropped by `ir.js`'s `ui` no-op) and
+  the panel carries `data-playright-chrome` so `observe()` ignores it.
+- Stepper keys are stopped on a **window** capture listener: Playwright's recorder listens
+  on `document` capture, later on the path, so it never records a `press`.
+  `test/picker-level.test.js` has a control proving the key *is* recorded otherwise.
+- The highlight is a positioned box, not an outline on the site's element — outlines and
+  backgrounds on a `<tr>` are invisible under its cells.
+
 `chooseItem()` in `selectors.js` is the hardest logic in the repo. Picking the repeating unit
 is *not* "outermost child of the container" nor "innermost repeating level" — it walks
 ancestors of the clicked element and prefers the **outermost** level whose match count

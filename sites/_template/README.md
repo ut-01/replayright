@@ -50,12 +50,41 @@ press it, click the value **inside the current entry**, and it is captured — n
 no separate "close" press. Press a different pill to capture another field on the same
 entry; nothing is captured until you press one.
 
-If the pick lands outside the entry, or the overlay cannot build it a selector unique to
-that spot, it tells you and re-arms the same field automatically — **click the same spot
-again** and it climbs to that element's parent instead of re-picking the same thing. This
-is also how to fix a plain "wrong element" pick when a wrapper and its content occupy the
-same area on screen: click once, and if the badge shows the wrong level, click the exact
-same spot again to walk outward one level at a time.
+If the pick lands outside the entry, it tells you and re-arms the same field
+automatically. If the overlay cannot build a selector unique to that spot, the **level
+stepper** opens instead (see below) so you can step up to a wrapper that can be addressed.
+
+### Picking an element you cannot click: the level stepper
+
+Every pick (container, item, field) hit-tests the innermost element under the cursor, so
+an element completely covered by its children — a table row under its cells, a gapless
+list under its items — has no pixel of its own to click. When that is the case, or when
+the pick would be rejected or looks doubtful, the click **freezes** on the element and a
+panel opens:
+
+```
+tr.job sits under what you clicked and cannot be clicked directly. Step up to reach it.
+body › div#table-wrap › table#jobs › [tbody] › tr.job › td.title
+▲ Parent   ▼ Child                                  ✓ Use   ✕
+✓ 5 repeating <tr> children
+```
+
+- **▲ / ▼** (or Arrow Up / Arrow Down) walk the ancestor chain; any breadcrumb jumps
+  straight to that level. Down stops at the element you clicked; up stops at `<body>` for a
+  container, just below the container for an item, and at the entry itself for a field.
+- The last line validates the selected level live: repeating children for a container,
+  the item count for an item, the selector and sample text for a field. **✓ Use** is
+  disabled on a level that cannot be used.
+- **✓ Use** (or Enter) commits; **✕** (or Escape) goes back to picking; clicking elsewhere
+  on the page starts a fresh pick there; pressing F cancels the whole F as usual.
+- **Shift-click** opens the stepper on any pick, even one that did not need it.
+
+A pick that needs none of this still commits on a single click. The hover badge tells you
+ahead of time: `TD (1 of 3) · ⇡ tr.job hidden, click to choose level`.
+
+None of the stepper's clicks or keys end up in `flow.json`: the buttons are
+`playright:ui:level:*` markers (dropped like the settings panel), and the keys are stopped
+before Playwright's recorder sees them.
 
 Tagged fields become one flat row per entry. `play`/`verify` write them to
 `sites/<id>/output.csv` (or `.json`, by `--out`'s extension) — nothing is written if no
