@@ -105,12 +105,27 @@ async function safeLocatorText(locator) {
 // most timing, but an SPA that swaps its list in place after a "Next Page" click
 // gives Playwright nothing to wait on - the old items are still attached and
 // clickable, so the next iteration happily re-scrapes the previous page.
+//
+// A single differing read is not enough to trust, the same way a single foreach
+// item-count read isn't (see resolveItemsUntilStable): a live-updating page can flash
+// a transient state right after the click - or, observed on a real site, silently
+// revert to the PREVIOUS page a moment later (its own background refresh apparently
+// resets pagination) - and accepting that flicker as "navigation complete" sends the
+// next iteration right back into content it already scraped. So require the changed
+// value to hold for two consecutive reads before calling it settled.
 async function waitForTextChange(page, selector, previousText, timeoutMs, ctx) {
   if (previousText === null) return;
   const deadline = Date.now() + timeoutMs;
+  let pendingValue = null;
   while (Date.now() < deadline) {
     const now = await safeText(page, selector);
-    if (now !== previousText) return;
+    if (now === previousText) {
+      pendingValue = null;
+    } else if (now === pendingValue) {
+      return;
+    } else {
+      pendingValue = now;
+    }
     await sleep(200);
   }
   note(ctx, 'warnings', {
