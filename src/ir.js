@@ -45,7 +45,7 @@ function splitOverlayEvents(events) {
 function splitFieldEvents(events) {
   return events
     .filter((event) => event.type === 'field')
-    .map((event) => ({ rel: event.rel || [], tag: event.tag || null, text: event.text || null }));
+    .map((event) => ({ key: event.key || null, rel: event.rel || [], tag: event.tag || null, text: event.text || null }));
 }
 
 const norm = (s) => (s || '').toLowerCase().replace(/\s+/g, ' ').trim();
@@ -313,7 +313,17 @@ function buildFlow({ siteId, startUrl, actionLog, overlayEvents }) {
           });
           continue;
         }
-        open.body.push({ kind: 'extract', key: marker.label, relativeSelectors: payload.rel });
+        // Prefer the out-of-band payload's own `key` over the marker's label parsed
+        // from the recorded click's accessible name: for a custom "+ Field" label, that
+        // accessible name is set dynamically (via the confirm button's aria-label, right
+        // before it's clicked - see overlay.js), and Chromium's accessibility tree does
+        // not always reflect that update by the time Playwright's recorder reads it back
+        // out, even when the DOM attribute itself is already correct. `payload.key`
+        // carries the same label through a direct JS->Node binding call instead
+        // (exposeBinding, not the accessibility tree), so it is never subject to that
+        // staleness. `marker.label` is kept as a fallback for a hand-built action log
+        // whose field payload predates this field, i.e. has no `key` of its own.
+        open.body.push({ kind: 'extract', key: payload.key || marker.label, relativeSelectors: payload.rel });
         continue;
       }
 

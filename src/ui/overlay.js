@@ -939,27 +939,34 @@ function installOverlay(config, html, css) {
 
   // --- field extraction (Phase 3.2) --------------------------------------------
   //
-  // One-shot arm -> pick -> capture, not a toggle: pressing a pill arms picking for
-  // that field, the very next picker click captures it (out-of-band, same as F's
-  // scope pick), and the toolbar falls straight back to idle - ready for the next
-  // field - with no separate "close" gesture the way F needs one. That is also why
+  // No preset field names - this overlay has no idea whether the page it's recording
+  // against is a job board, a product listing, or something else entirely, so "+ Field"
+  // is the only entry point and the user always types the label that fits their own
+  // page. One-shot arm -> pick -> capture, not a toggle: typing a label and confirming
+  // arms picking for that field, the very next picker click captures it (out-of-band,
+  // same as F's scope pick), and the toolbar falls straight back to idle - ready for the
+  // next field - with no separate "close" gesture the way F needs one. That is also why
   // the marker only has a `pick` phase (`playright:field:pick:<key>`, see
   // generalize.js#parseMarker): there is nothing else to name.
   //
   // Only meaningful, and only shown, while an F body is open (fState === 'body') - a
   // field selector is relative to fItem, which does not exist otherwise.
   const fieldsRow = shadow.querySelector('[data-pr="fields"]');
-  const fieldButtons = Array.from(shadow.querySelectorAll('[data-pr="field-btn"]'));
   const fieldAddBtn = shadow.querySelector('[data-pr="field-add-btn"]');
   const fieldCustomWrap = shadow.querySelector('[data-pr="field-custom"]');
   const fieldInput = shadow.querySelector('[data-pr="field-input"]');
   const fieldConfirmBtn = shadow.querySelector('[data-pr="field-confirm-btn"]');
 
-  // Fixed pills' aria-labels never change, so - unlike R/F, whose meaning flips on
-  // every press - these are set once, here, rather than in every handler.
-  for (const btn of fieldButtons) {
-    btn.setAttribute('aria-label', PREFIX + 'field:pick:' + btn.dataset.fieldKey);
-  }
+  // No-op markers (kind "field", phase anything but "pick" - see ir.js's field
+  // handling) so these are recognized as overlay chrome and dropped, the same way
+  // stepper/settings buttons are. Never change, so set once here rather than per-click.
+  // The input needs one too, not just the buttons around it: typing into it commits a
+  // real `fill` action (Playwright records the text box being filled, same as any real
+  // form field), and isOverlayAction() keys off the marker prefix regardless of action
+  // type - a plain `placeholder` is not an accessible NAME, so without this the fill
+  // would leak into the recorded flow as a stray step.
+  fieldAddBtn.setAttribute('aria-label', PREFIX + 'field:add');
+  fieldInput.setAttribute('aria-label', PREFIX + 'field:input');
 
   let fieldArmedKey = null;
 
@@ -1016,12 +1023,6 @@ function installOverlay(config, html, css) {
     send({ type: 'field', key, rel, tag: el.tagName.toLowerCase(), text: textOf(el) });
     say('Captured "' + key + '": ' + JSON.stringify(textOf(el) || '').slice(0, 80), 'good');
     fieldArmedKey = null;
-  }
-
-  for (const btn of fieldButtons) {
-    btn.addEventListener('click', () => {
-      armField(btn.dataset.fieldKey);
-    });
   }
 
   fieldAddBtn.addEventListener('click', () => {

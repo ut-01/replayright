@@ -26,7 +26,7 @@ const log = (...actions) => actions.map((action, seq) => ({ seq, action }));
 const scopeEvent = (overrides = {}) => ({
   type: 'F', phase: 'scope', parents: ['#results'], items: ['li.card', 'li'], count: 5, ...overrides,
 });
-const fieldEvent = (rel, tag = 'a', text = 'Frontend Engineer') => ({ type: 'field', rel, tag, text });
+const fieldEvent = (rel, tag = 'a', text = 'Frontend Engineer', key) => ({ type: 'field', rel, tag, text, key });
 
 test('a field pick inside an F body produces an extract step', () => {
   const { flow, warnings } = buildFlow({
@@ -76,6 +76,25 @@ test('multiple fields in one iteration each produce their own extract step, in o
     ['extract', 'Location'],
     ['extract', 'Posted date'],
   ]);
+});
+
+test('the field payload\'s own key wins over the marker\'s accessible-name label when they disagree', () => {
+  // Regression: for a custom "+ Field" label, the confirm button's aria-label is set
+  // dynamically right before it is clicked (see overlay.js), and Chromium's
+  // accessibility tree does not always reflect that update by the time Playwright's
+  // recorder reads it back out as the click's accessible name - even though the DOM
+  // attribute is already correct. That produced a marker with an empty/stale label
+  // despite the field being captured correctly out-of-band. `payload.key` (sent via a
+  // direct JS->Node binding call, never the accessibility tree) must win.
+  const { flow } = buildFlow({
+    siteId: 's',
+    url: 'u',
+    actionLog: log(marker('F:arm'), marker('field:pick:'), marker('F:close')),
+    overlayEvents: [scopeEvent(), fieldEvent(['.card-link'], 'a', 'Frontend Engineer', 'Title')],
+  });
+
+  const foreach = flow.steps.find((s) => s.kind === 'foreach');
+  assert.strictEqual(foreach.body[0].key, 'Title');
 });
 
 test('a custom field label with a colon survives the marker round-trip intact', () => {
@@ -327,11 +346,16 @@ test('a driven recording that tags two fields replays into a CSV with matching c
     const card = await page.locator('#results li.card').first().boundingBox();
     await page.mouse.click(card.x + card.width / 2, card.y + card.height / 2);
 
-    // Field pills only appear once the F body is open.
+    // "+ Field" only appears once the F body is open. There are no preset field names -
+    // every field label is typed in, confirmed, then captured by clicking its value.
+    await page.getByRole('button', { name: 'playright:field:add' }).click();
+    await page.getByPlaceholder('Field name').fill('Title');
     await page.getByRole('button', { name: 'playright:field:pick:Title' }).click();
     const title = await page.locator('#results li.card').first().locator('a.card-link').boundingBox();
     await page.mouse.click(title.x + title.width / 2, title.y + title.height / 2);
 
+    await page.getByRole('button', { name: 'playright:field:add' }).click();
+    await page.getByPlaceholder('Field name').fill('Location');
     await page.getByRole('button', { name: 'playright:field:pick:Location' }).click();
     const loc = await page.locator('#results li.card').first().locator('span.loc').boundingBox();
     await page.mouse.click(loc.x + loc.width / 2, loc.y + loc.height / 2);

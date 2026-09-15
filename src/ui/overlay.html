@@ -40,22 +40,24 @@
 </div>
 
 <!--
-  Field-pick pills (Phase 3.2). One-shot arm -> pick -> capture, not a toggle: pressing
-  a pill arms picking for that field, the very next picker click captures it, and the
-  toolbar returns to this row ready for the next field. `hidden` by default - overlay.js
-  only reveals this row while an F body is actually open (fState === 'body'), since a
-  field selector has nothing to be relative to otherwise; JS toggles the attribute
-  rather than a class so an idle toolbar has nothing extra painted.
+  Field-pick entry point (Phase 3.2). No preset field names live here on purpose - this
+  overlay is used on every kind of listing (jobs, products, search results, anything),
+  and a fixed set of pills ("Title", "Location", ...) would just be wrong guesses for
+  most of them. The only affordance is "+ Field": the user always types the field name
+  that makes sense for THEIR page. One-shot arm -> pick -> capture, not a toggle:
+  pressing it, then typing a label and confirming, arms picking for that field; the very
+  next picker click captures it and the toolbar falls back to idle, ready for the next
+  field. `hidden` by default - overlay.js only reveals this row while an F body is
+  actually open (fState === 'body'), since a field selector has nothing to be relative to
+  otherwise; JS toggles the attribute rather than a class so an idle toolbar has nothing
+  extra painted.
 
-  aria-label is set at mount time in overlay.js (not baked in here), same reasoning as
-  the R/F buttons above - it IS the marker `playright:field:pick:<key>` Playwright's own
-  selector generator reads back out of the recorded click.
+  aria-label is set at mount time in overlay.js to a no-op `playright:field:add` marker -
+  it must carry the `playright:` prefix so ir.js's overlay-noise filter drops the click
+  on it, the same way it drops stepper/settings chrome; without that prefix this button's
+  own click would leak into the recorded flow as a stray step.
 -->
 <div class="pr-fields" data-pr="fields" hidden>
-  <button type="button" class="pr-pill" data-pr="field-btn" data-field-key="Title">Title</button>
-  <button type="button" class="pr-pill" data-pr="field-btn" data-field-key="Location">Location</button>
-  <button type="button" class="pr-pill" data-pr="field-btn" data-field-key="Posted date">Posted date</button>
-  <button type="button" class="pr-pill" data-pr="field-btn" data-field-key="Description">Description</button>
   <button type="button" class="pr-pill pr-pill--add" data-pr="field-add-btn">+ Field</button>
 </div>
 

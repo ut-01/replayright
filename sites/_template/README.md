@@ -44,11 +44,13 @@ the block.
 
 ### Field extraction: turning the loop into rows
 
-While an `F` body is open, a row of pill buttons appears — **Title**, **Location**,
-**Posted date**, **Description**, and **+ Field** for a custom label. Each is one-shot:
-press it, click the value **inside the current entry**, and it is captured — no toggle,
-no separate "close" press. Press a different pill to capture another field on the same
-entry; nothing is captured until you press one.
+While an `F` body is open, a **+ Field** button appears — there are no preset field
+names, since the overlay has no idea whether it's recording a job board, a product
+listing, or anything else; you always type the label that fits your own page. Press it,
+type a name (e.g. "Title", "Price", "Posted date" — whatever your page actually has),
+confirm, then click the value **inside the current entry**, and it is captured — no
+toggle, no separate "close" press. Press **+ Field** again to capture another field on
+the same entry; nothing is captured until you do.
 
 If the pick lands outside the entry, it tells you and re-arms the same field
 automatically. If the overlay cannot build a selector unique to that spot, the **level
@@ -222,7 +224,7 @@ Five step kinds, nestable:
   "body": [ ... ] }
 
 { "kind": "extract",                 // only ever appears directly inside a foreach's body
-  "key": "Title",                    // the pill's label, or whatever you typed into "+ Field"
+  "key": "Title",                    // whatever label you typed into "+ Field"
   "relativeSelectors": ["..."] }     // relative to the current entry; "" means the entry itself
 
 { "kind": "assert",                  // hand-authored only - not produced by the recorder

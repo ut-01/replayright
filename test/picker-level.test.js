@@ -215,6 +215,8 @@ test('an unaddressable field pick opens the stepper and can be stepped up to the
     const card = await page.locator('#results li.card').first().boundingBox();
     await page.mouse.click(card.x + 4, card.y + 4);
 
+    await page.getByRole('button', { name: 'playright:field:add' }).click();
+    await page.getByPlaceholder('Field name').fill('Description');
     await page.getByRole('button', { name: 'playright:field:pick:Description' }).click();
     await clickCenter(page, page.locator('#card-1 span.dup').first());
     seen.start = await levelState(page);
