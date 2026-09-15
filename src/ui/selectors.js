@@ -20,12 +20,24 @@ const esc = (s) => (window.CSS && CSS.escape ? CSS.escape(s) : String(s).replace
 
 // --- selector construction --------------------------------------------------
 
+// Builds a document-unique selector ANCHORED AT `el` ITSELF: the walk starts from the
+// clicked element (depth 0 is just el's own tag/nth-of-type, no ancestor at all) and
+// only prepends an ancestor segment when the selector built so far is still not unique
+// in the document - never the other way around. This is the same self-first,
+// grow-only-as-needed shape relativeCandidates() already uses for item-relative
+// selectors; cssPath() is the equivalent for a page-level (document-scoped) one.
+// Stopping the instant the suffix is unique also keeps the result as short - and so as
+// robust - as the DOM allows, instead of always walking the full `maxDepth` ancestors
+// regardless of whether they were needed.
 function cssPath(el, maxDepth) {
   const parts = [];
   let node = el;
   let depth = 0;
   while (node && node.nodeType === 1 && depth < (maxDepth || 10)) {
-    if (node.id) { parts.unshift(node.tagName.toLowerCase() + '#' + esc(node.id)); break; }
+    if (node.id) {
+      parts.unshift(node.tagName.toLowerCase() + '#' + esc(node.id));
+      return parts.join(' > ');
+    }
     let part = node.tagName.toLowerCase();
     const parent = node.parentElement;
     if (parent) {
@@ -33,6 +45,10 @@ function cssPath(el, maxDepth) {
       if (sameTag.length > 1) part += ':nth-of-type(' + (sameTag.indexOf(node) + 1) + ')';
     }
     parts.unshift(part);
+    const sel = parts.join(' > ');
+    let count = 0;
+    try { count = document.querySelectorAll(sel).length; } catch { /* keep climbing */ }
+    if (count === 1) return sel;
     node = parent;
     depth += 1;
   }
@@ -56,6 +72,16 @@ function stableClasses(el) {
 }
 
 const withClasses = (tag, classes) => tag.toLowerCase() + classes.map((c) => '.' + esc(c)).join('');
+
+// `node`'s 1-based position among ITS OWN PARENT'S children (i.e. CSS `:nth-child`,
+// not `:nth-of-type` - matches every sibling regardless of tag, which is what makes
+// it unique for a class-less, id-less cell inside a row of otherwise-identical
+// siblings). null when node has no parent to be positioned within.
+function nthChildOf(node) {
+  const parent = node.parentElement;
+  if (!parent) return null;
+  return Array.from(parent.children).indexOf(node) + 1;
+}
 
 // Ranked MOST ROBUST FIRST, de-duplicated, each one actually counted against the live
 // DOM - nothing is proposed that has not been verified to match here and now.
@@ -176,6 +202,17 @@ function relativeCandidates(el, root) {
     const value = el.getAttribute(attr);
     if (value) push(`${tag}[${attr}="${value}"]`);
   }
+
+  // Index-based fallback for a class-less, id-less, attribute-less target - a plain
+  // `<td>` inside a table row being the recurring real case. When `el` is a direct
+  // child of `root` (a cell directly under its row), this is exactly `td:nth-child(N)`
+  // scoped to that one row, which `push()`'s uniqueness check confirms is safe. Only
+  // covers `el`'s OWN position, deliberately not threaded through the ancestor chain
+  // below - a deeper element whose whole path (classes stripped) is genuinely
+  // indistinguishable from a sibling branch should stay unaddressable and fall through
+  // to the level stepper, rather than be pinned to a brittle multi-level position path.
+  const selfIdx = nthChildOf(el);
+  if (selfIdx) push(tag + ':nth-child(' + selfIdx + ')');
 
   // Ancestor chains as fallbacks, for targets that only a path can pin down.
   push(chain(true));

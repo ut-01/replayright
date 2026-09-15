@@ -474,8 +474,14 @@ function installOverlay(config, html, css) {
 
     levelPanel.querySelector('[data-pr="level-reason"]').textContent = frozen.reason;
 
-    // Outermost on the left, like a path: body › table › tbody › [tr] › td. Long chains
-    // show a window around the current level so the panel stays one line.
+    // Innermost - what you actually clicked (index 0) - always leads, growing OUTWARD
+    // to the right toward body: td › tr › [tbody] › table › ... . Index 0 is always
+    // pinned into view even when the current level (`idx`) has been stepped up far
+    // enough that the sliding window below would otherwise leave it off-screen -
+    // the breadcrumb starts from the child unconditionally, never from an ancestor,
+    // regardless of where the stepper's current level happens to be. Long chains
+    // still show a window around the current level (plus the pinned 0) so the panel
+    // stays one line, with "…" marking any gap that isn't shown.
     const crumbs = levelPanel.querySelector('[data-pr="level-crumbs"]');
     crumbs.textContent = '';
     const hi = Math.min(chain.length - 1, Math.max(idx + 3, 6));
@@ -486,8 +492,7 @@ function installOverlay(config, html, css) {
       sep.textContent = text;
       crumbs.appendChild(sep);
     };
-    if (hi < chain.length - 1) addSep('… ›');
-    for (let i = hi; i >= lo; i -= 1) {
+    const addCrumb = (i) => {
       const crumb = document.createElement('button');
       crumb.type = 'button';
       crumb.className = 'pr-level-crumb' + (i === idx ? ' is-current' : '');
@@ -499,9 +504,15 @@ function installOverlay(config, html, css) {
       text.textContent = levelLabel(chain[i]);
       crumb.appendChild(text);
       crumbs.appendChild(crumb);
-      if (i > lo) addSep('›');
+    };
+    const shown = Array.from(new Set([0, ...Array.from({ length: hi - lo + 1 }, (_, k) => lo + k)])).sort((a, b) => a - b);
+    let prev = -1;
+    for (const i of shown) {
+      if (prev >= 0) addSep(i - prev > 1 ? '›  … ' : '›');
+      addCrumb(i);
+      prev = i;
     }
-    if (lo > 0) addSep('› …');
+    if (hi < chain.length - 1) addSep('›  … ');
 
     const info = currentLevelInfo();
     const infoEl = levelPanel.querySelector('[data-pr="level-info"]');
@@ -587,6 +598,46 @@ function installOverlay(config, html, css) {
   }, true);
   window.addEventListener('keyup', (e) => {
     if (!swallowedKeys.delete(e.key)) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+  }, true);
+
+  // Any click landing inside our own chrome that is NOT one of our marker elements
+  // must never reach Playwright's recorder - same reasoning, and the same technique
+  // (a window-capture listener fires before Playwright's own document-capture
+  // listener, so stopping it here means Playwright never sees the event at all), as
+  // the keydown/keyup swallowing above.
+  //
+  // This was missing for clicks specifically, and it is what let a level-stepper
+  // click leak into a real recording: the panel's own descendant click handlers
+  // (level-up/down/use/cancel/preview/crumbs, wired above) never call
+  // stopPropagation - they don't need to, because those elements DO carry a
+  // `playright:` marker aria-label, so ir.js's isOverlayAction() recognises and
+  // drops the resulting recorded action as a `ui` no-op. But `.pr-level-reason` (the
+  // live validation text) and the panel's own background/padding carry no marker at
+  // all and have no click handler either - a click that misses the actual buttons
+  // (easy to do: the panel is dense, and its text changes live while the user reads
+  // it) bubbled straight past everything to `document` and got recorded as a genuine
+  // page-level click on whatever generic selector Playwright generated for that
+  // spot, with nothing in ir.js able to identify it as chrome afterwards. That
+  // produced literal `flow.json` steps like `div.pr-level-panel` / text-matching
+  // "... sits under what you clicked ..." - a real recording observed against
+  // nseindia.com's advance/decline table.
+  //
+  // The toolbar's own shadow-DOM buttons (rBtn/fBtn/settingsBtn) are deliberately
+  // exempt: an event listener outside an OPEN shadow root sees `event.target`
+  // retargeted to the shadow HOST (`#playright-overlay`) rather than the actual
+  // button clicked, so there is no way to tell "the R button" apart from "empty
+  // toolbar padding" from out here - and R/F/settings clicks must reach Playwright's
+  // recorder regardless (that recording, then ir.js dropping it by marker, IS the
+  // mechanism). Every other chrome layer (picker, level panel, settings panel) lives
+  // in the light DOM, appended to `document.documentElement`, where `event.target`
+  // is the real element with no such ambiguity.
+  window.addEventListener('click', (e) => {
+    const target = e.target;
+    if (target === host) return;
+    if (!isOurs(target)) return;
+    if (target.closest && target.closest('[aria-label^="' + PREFIX + '"]')) return;
     e.preventDefault();
     e.stopImmediatePropagation();
   }, true);
@@ -749,17 +800,18 @@ function installOverlay(config, html, css) {
     openPicker('Click the CONTAINER', {
       top: () => document.body,
       preview: (raw) => raw,
-      // The level with the most same-tag children is the likeliest list (ties: the
-      // innermost), e.g. <tbody> rather than the <tr> when a <td> was clicked.
-      suggest: (chain) => {
-        let best = 0;
-        let bestCount = 1;
-        chain.forEach((el, i) => {
-          const { count } = repeatingChildren(el);
-          if (count > bestCount) { best = i; bestCount = count; }
-        });
-        return best;
-      },
+      // Always start the stepper at the innermost element - what was actually
+      // clicked - never at some distant ancestor. A "most repeating same-tag
+      // children anywhere up to body" heuristic used to pick the initial level here,
+      // but on a real page with several unrelated repeating blocks (nav lists,
+      // widget grids, footer links) it could jump the default selection to one of
+      // those instead of the list actually under the click - confusing at best, and
+      // on at least one real site landing the initial pick on an unrelated section
+      // with more repeating children than the intended table. The user can still
+      // step up manually with "Parent" if the clicked element itself isn't usable;
+      // `needsHelp`/`hiddenMatters` below are what open the stepper in the first
+      // place; this only controls where it starts.
+      suggest: () => 0,
       needsHelp: (raw) => !hasRepeatingDescendant(raw),
       // A flush parent only matters when it is a better list than what was clicked:
       // the <tr> behind a <td>, the gapless <ul> behind an <li> - not the layout
@@ -1136,17 +1188,37 @@ function installOverlay(config, html, css) {
     }
   }
 
+  // Anchors the settings panel to wherever the gear button ACTUALLY is, instead of the
+  // fixed top-right corner `.pr-settings-panel`'s base CSS assumes - the button moves
+  // with the toolbar (any of 4 corners via applyPosition(), row/column via
+  // applyOrientation()), and the panel has to follow it or it opens disconnected from
+  // (or off the edge of) the toolbar. Opens toward the middle of the viewport from
+  // whichever quadrant the button is in, so it never has to reach off-screen.
+  function positionSettingsPanel() {
+    if (!settingsPanel) return;
+    const rect = settingsBtn.getBoundingClientRect();
+    const margin = 8;
+    const openLeft = rect.left > window.innerWidth / 2;
+    const openUp = rect.top > window.innerHeight / 2;
+
+    settingsPanel.style.left = openLeft ? 'auto' : (rect.right + margin) + 'px';
+    settingsPanel.style.right = openLeft ? (window.innerWidth - rect.left + margin) + 'px' : 'auto';
+    settingsPanel.style.top = openUp ? 'auto' : rect.top + 'px';
+    settingsPanel.style.bottom = openUp ? (window.innerHeight - rect.bottom) + 'px' : 'auto';
+  }
+
   function toggleSettingsPanel() {
     if (!settingsPanel) initSettingsPanel();
+    if (settingsPanel.hidden) positionSettingsPanel();
     settingsPanel.hidden = !settingsPanel.hidden;
   }
 
   function applyPosition(position) {
     const positions = {
-      'top-right': { top: '12px', right: '12px', bottom: 'auto', left: 'auto', transform: 'none' },
-      'top-left': { top: '12px', left: '12px', bottom: 'auto', right: 'auto', transform: 'none' },
-      'bottom-right': { bottom: '12px', right: '12px', top: 'auto', left: 'auto', transform: 'none' },
-      'bottom-left': { bottom: '12px', left: '12px', top: 'auto', right: 'auto', transform: 'none' },
+      'top-right': { top: '12px', right: '12px', bottom: 'auto', left: 'auto', transform: 'none', align: 'flex-end' },
+      'top-left': { top: '12px', left: '12px', bottom: 'auto', right: 'auto', transform: 'none', align: 'flex-start' },
+      'bottom-right': { bottom: '12px', right: '12px', top: 'auto', left: 'auto', transform: 'none', align: 'flex-end' },
+      'bottom-left': { bottom: '12px', left: '12px', top: 'auto', right: 'auto', transform: 'none', align: 'flex-start' },
     };
 
     if (positions[position]) {
@@ -1156,15 +1228,20 @@ function installOverlay(config, html, css) {
       host.style.bottom = styles.bottom;
       host.style.left = styles.left;
       host.style.transform = styles.transform;
+      // `align-items` governs the cross-axis alignment of the open-strip text and the
+      // field pills, both of which right-align by default (overlay.css assumes the
+      // toolbar's default top-right corner) - left-anchored positions need the mirror
+      // image or that content overhangs past the toolbar's own left edge.
+      host.style.alignItems = styles.align;
+      host.style.setProperty('--pr-align', styles.align);
     }
+    // The gear button just moved with the toolbar; keep an already-open panel glued to it.
+    if (settingsPanel && !settingsPanel.hidden) positionSettingsPanel();
   }
 
   function applyOrientation(orientation) {
-    if (orientation === 'horizontal') {
-      host.style.flexDirection = 'row';
-    } else {
-      host.style.flexDirection = 'column';
-    }
+    host.style.flexDirection = orientation === 'horizontal' ? 'row' : 'column';
+    if (settingsPanel && !settingsPanel.hidden) positionSettingsPanel();
   }
 
   settingsBtn.addEventListener('click', () => {

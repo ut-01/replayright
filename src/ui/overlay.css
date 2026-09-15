@@ -175,7 +175,10 @@
 .pr-fields {
   display: flex;
   flex-wrap: wrap;
-  justify-content: flex-end;
+  /* Packs pills toward the same edge the toolbar itself is pinned to
+     (--pr-align set inline by overlay.js's applyPosition() alongside the host's own
+     align-items) - defaults to the top-right corner's flex-end. */
+  justify-content: var(--pr-align, flex-end);
   gap: 4px;
   max-width: 160px;
 }

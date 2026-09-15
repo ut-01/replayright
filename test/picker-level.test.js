@@ -106,10 +106,15 @@ test('a table row is reachable: container steps to tbody, item steps from a cell
     await page.getByRole('button', { name: 'playright:F:arm' }).click();
 
     // Container: a cell. Its <tr> cannot be clicked, so the stepper opens instead of
-    // committing the <td> - suggesting the level with the most repeating children.
+    // committing the <td> directly - starting at the clicked element itself (never
+    // some distant ancestor picked by a "most repeating children anywhere" guess),
+    // so reaching the actual list means stepping up to where it lives: td -> tr -> tbody.
     await clickCenter(page, page.locator('#jobs td.title').first());
     seen.container = await levelState(page);
     seen.panelVisible = await page.locator('[data-pr="level-panel"]').isVisible();
+    await levelButton(page, 'up').click();
+    await levelButton(page, 'up').click();
+    seen.containerAtTbody = await levelState(page);
     await levelButton(page, 'use').click();
 
     // Item: a class-less cell, where chooseItem() on its own would settle for the <td>
@@ -126,10 +131,11 @@ test('a table row is reachable: container steps to tbody, item steps from a cell
   });
 
   assert.ok(seen.panelVisible, 'the stepper panel is shown');
-  assert.strictEqual(seen.container.current, 'tbody', `container should start at tbody, got ${JSON.stringify(seen.container)}`);
+  assert.strictEqual(seen.container.current, 'td.title', 'container stepper starts at the clicked element itself, not a guessed ancestor');
   assert.strictEqual(seen.container.labels[0], 'td.title', 'down stops at the element actually clicked');
   assert.strictEqual(seen.container.labels.at(-1), 'body', 'up stops at <body>');
-  assert.strictEqual(seen.container.info.tone, 'good');
+  assert.strictEqual(seen.containerAtTbody.current, 'tbody', 'stepping up twice from the clicked cell reaches the table body');
+  assert.strictEqual(seen.containerAtTbody.info.tone, 'good');
 
   assert.strictEqual(seen.itemStart.current, 'td', 'item starts where chooseItem would have landed');
   assert.deepStrictEqual(seen.itemStart.labels, ['td', 'tr.job'], 'item levels stop below the container');
@@ -164,7 +170,11 @@ test('arrow keys, Enter and Escape drive the stepper and are never recorded as p
     await page.keyboard.press('Escape');
     seen.escaped = await levelState(page);
 
+    // Up, up, down lands back on ul#gapless (a real, sensible container) rather than
+    // the single <li> first clicked - committing one specific <li> as "the container"
+    // would leave the next step's item pick unable to find itself inside it.
     await clickCenter(page, page.locator('#gapless li').nth(1));
+    await page.keyboard.press('ArrowUp');
     await page.keyboard.press('ArrowUp');
     await page.keyboard.press('ArrowDown');
     seen.down = await levelState(page);
@@ -185,8 +195,8 @@ test('arrow keys, Enter and Escape drive the stepper and are never recorded as p
     await page.keyboard.press('ArrowDown');
   });
 
-  assert.strictEqual(seen.start.current, 'ul#gapless');
-  assert.strictEqual(seen.up.current, 'div#list-wrap');
+  assert.strictEqual(seen.start.current, 'li.entry', 'stepper starts at the clicked element itself');
+  assert.strictEqual(seen.up.current, 'ul#gapless');
   assert.strictEqual(seen.escaped, null, 'Escape returns to picking');
   assert.strictEqual(seen.down.current, 'ul#gapless');
   assert.strictEqual(seen.entered, null, 'Enter commits');
@@ -205,7 +215,15 @@ test('arrow keys, Enter and Escape drive the stepper and are never recorded as p
 // --- fields: an unaddressable pick opens the stepper instead of a retry loop ---------
 
 // Card 1's two `.wrap > span.dup` branches are structurally identical (see the climb
-// fixture), so neither the span nor its wrap can be addressed uniquely inside the item.
+// fixture), so `span.dup` itself has no selector that picks it out from its twin - not
+// even `relativeCandidates()`'s index-based fallback, since a `<span>` that is the only
+// child of its own `<div class="wrap">` sits at the same nth-child position (1) in both
+// branches. Stepping up once to `div.wrap`, though, DOES become addressable purely by
+// position (`div:nth-child(1)` vs `div:nth-child(2)`) - `div.wrap` is a direct child of
+// the item root, where each branch's own ordinal position among the item's children is
+// exactly what tells the two apart. Climbing to the item root itself remains available
+// too (`''`, always addressable), which this test still exercises by jumping past
+// `div.wrap` via the crumb rather than using it once it too can be addressed.
 test('an unaddressable field pick opens the stepper and can be stepped up to the item root', async () => {
   const seen = {};
   const { flow } = await record('_test_level_field', CLIMB_URL, async (page) => {
@@ -238,7 +256,7 @@ test('an unaddressable field pick opens the stepper and can be stepped up to the
   assert.strictEqual(seen.start.info.tone, 'bad');
   assert.ok(seen.useDisabled, 'Use is disabled on an unaddressable level');
   assert.ok(seen.downDisabled, 'cannot step below the element clicked');
-  assert.strictEqual(seen.wrap.info.tone, 'bad');
+  assert.strictEqual(seen.wrap.info.tone, 'good', 'div.wrap is addressable by nth-child position, one level up from the ambiguous span');
   assert.strictEqual(seen.root.current, 'li#card-1');
   assert.strictEqual(seen.root.info.tone, 'good');
   assert.ok(seen.upDisabled, 'cannot step above the item root');

@@ -44,10 +44,13 @@ test('the Preview button shows the ranked-candidate breakdown for an item-pick l
   await record('_test_level_preview', FLUSH_URL, async (page) => {
     await page.getByRole('button', { name: 'playright:F:arm' }).click();
 
-    // Container stage: the stepper opens (a <tr> can't be clicked directly), but this
-    // stage has no previewDetails() - the button should not even be shown.
+    // Container stage: the stepper opens (a <tr> can't be clicked directly), starting
+    // at the clicked cell itself; step up to the table body before committing. This
+    // stage has no previewDetails() - the button should not even be shown, at any level.
     await clickCenter(page, page.locator('#jobs td.title').first());
     seen.containerPreviewVisible = await page.locator('[data-pr="level-preview"]').isVisible();
+    await levelButton(page, 'up').click();
+    await levelButton(page, 'up').click();
     await levelButton(page, 'use').click();
 
     // Item stage: a class-less cell where chooseItem() climbs to the row - this stage
