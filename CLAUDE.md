@@ -15,11 +15,21 @@ Plain CommonJS Node, zero dev tooling. The only dependency is `playwright`.
 
 ```
 npm install                                    # no node_modules checked in; also needs `npx playwright install chromium`
-npm run record -- --id=<id> --url="<url>"      # headed; writes sites/<id>/, then self-verifies
-npm run verify -- --id=<id>                    # replay headed + per-step report; does NOT touch fingerprint.json
-npm run play   -- --id=<id>                    # headless; what a schedule runs; updates the drift fingerprint
-npm run emit   -- --id=<id>                    # regenerate the read-only flow.js view
-npm run list                                   # recorded sites + verified/UNVERIFIED
+replayright record --id=<id> --url="<url>"     # headed; writes sites/<id>/, then self-verifies
+replayright verify --id=<id>                   # replay headed + per-step report; does NOT touch fingerprint.json
+replayright play   --id=<id>                   # headless; what a schedule runs; updates the drift fingerprint
+replayright emit   --id=<id>                   # regenerate the read-only flow.js view
+replayright list                               # recorded sites, tags, last-run status; --porcelain for the old plain format
+replayright validate --id=<id>                 # static flow.json shape check - no browser, no network
+replayright tag --id=<id> --add=<name>         # add/remove a name from flow.json's tags array (--remove=<name> too)
+replayright init [--force]                     # scaffold replayright.config.json (+ a commented .jsonc reference)
+replayright config --id=<id>                   # print the fully-resolved config for <id>, with which layers set what
+
+# not installed (npm link / global install) yet? record/verify/play/emit/list/run have
+# npm script aliases too (package.json's "scripts"); init/config/tag/validate don't, so
+# without the bin installed those four are `node src/cli.js <command> ...` instead:
+npm run record -- --id=<id> --url="<url>"
+node src/cli.js init [--force]
 ```
 
 Flags (all commands): `--headless[=true|false]` (default: false for record/verify, true for
@@ -117,6 +127,12 @@ passed to `openPicker(instruction, stage)`. Invariants:
   `test/picker-level.test.js` has a control proving the key *is* recorded otherwise.
 - The highlight is a positioned box, not an outline on the site's element — outlines and
   backgrounds on a `<tr>` are invisible under its cells.
+- The item stage's `describe()` already shows a one-line live count/mismatch summary at
+  every level. A stage may additionally define `previewDetails(el, ctx)` (currently only
+  the item stage does) returning the full ranked-candidate breakdown; when present, the
+  stepper panel shows a "Preview" button (`playright:ui:level:preview`, also a `ui` no-op)
+  that expands it inline — the same data `pickPreview` returns, computed live instead of
+  via `querySelector`'d strings, so checking a pick no longer requires opening devtools.
 
 `chooseItem()` in `selectors.js` is the hardest logic in the repo. Picking the repeating unit
 is *not* "outermost child of the container" nor "innermost repeating level" — it walks
@@ -199,11 +215,11 @@ only and is skipped by `list`. Recording profiles are persisted in
 
 ## Gotchas
 
-- **Naming is inconsistent and load-bearing in one place.** The package is `replayright`,
-  the README says `replaywright`, the CLI usage text says `playRight` — but
+- **Naming is load-bearing in one place, and nowhere else.** The package, README, and CLI
+  usage text all consistently say `replayright` now — but
   `MARKER_PREFIX = 'playright:'` in [src/constants.js](src/constants.js) is baked into
-  every recorded marker selector and into `sites/*/last-recording.actions.json`. Changing
-  it invalidates existing recordings.
+  every recorded marker selector and into `sites/*/last-recording.actions.json`. This one
+  spelling must NOT change; changing it invalidates existing recordings.
 - `context._enableRecorder` is internal and absent from `playwright-core/types/types.d.ts`.
   It is verified against `playwright-core@1.62.1` (line references are in the comments at
   the top of [src/record.js](src/record.js)). Re-verify recording end-to-end after any

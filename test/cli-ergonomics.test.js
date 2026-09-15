@@ -80,6 +80,36 @@ test('init refuses to overwrite an existing config file', async () => {
   }
 });
 
+test('init --force overwrites an existing config file instead of refusing to run', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'replayright-test-'));
+  const originalCwd = process.cwd();
+
+  try {
+    process.chdir(tmpDir);
+
+    fs.writeFileSync(
+      path.join(tmpDir, 'replayright.config.json'),
+      JSON.stringify({ sitesDir: './custom-sites' }, null, 2)
+    );
+
+    execSync('node ' + path.join(originalCwd, 'src', 'cli.js') + ' init --force', {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      cwd: tmpDir,
+    });
+
+    const configText = fs.readFileSync(path.join(tmpDir, 'replayright.config.json'), 'utf8');
+    const parsed = JSON.parse(configText);
+    const def = defaults();
+    assert.strictEqual(parsed.sitesDir, def.sitesDir, '--force should overwrite the existing config with fresh defaults');
+
+    const examplePath = path.join(tmpDir, 'replayright.config.example.jsonc');
+    assert(fs.existsSync(examplePath), '--force should still (re)write the example config too');
+  } finally {
+    process.chdir(originalCwd);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
 test('--sites-dir flag changes where sites are looked up', async () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'replayright-test-'));
   const originalCwd = process.cwd();

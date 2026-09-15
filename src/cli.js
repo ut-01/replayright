@@ -13,11 +13,12 @@ const { writeOutput, toCsv, toJson, readJsonl, appendJsonl, mergeAppendRecords }
 const drift = require('./drift');
 const { probeRequiresHeaded } = require('./headless-probe');
 const { logInfo, logWarn, logError, setLogFormat, setLogSiteId, EVENT } = require('./log');
-const { buildRunRecord, writeRunRecord } = require('./run-record');
+const { buildRunRecord, writeRunRecord, runsDir } = require('./run-record');
 const { CHROMIUM_ARGS, EXIT_CODE } = require('./constants');
 const { ensureDisplay } = require('./display');
 const { loadConfig, resolveOutputPath, resolveOutputFormat, resolveSitesDir, defaults, CONFIG_FILENAME } = require('./config');
 const { findSecretRefs } = require('./secrets');
+const { validateFlow } = require('./flow-validate');
 // index.js's play() - the same orchestration `play --id=<id>` runs (config resolution,
 // Xvfb setup, drift capture, run-record writing) - reused as-is for each site `run --all`
 // touches, rather than re-implemented here. See index.js's own header comment for why it
@@ -27,10 +28,10 @@ const { findSecretRefs } = require('./secrets');
 const { play: playSite } = require('../index');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
-const COMMANDS = ['record', 'play', 'verify', 'emit', 'list', 'init', 'run'];
+const COMMANDS = ['record', 'play', 'verify', 'emit', 'list', 'init', 'run', 'config', 'tag', 'validate'];
 
 function usage() {
-  console.log(`playRight - record a web flow once, replay it every day.
+  console.log(`replayright - record a web flow once, replay it every day.
 
 Usage: node src/cli.js <command> [options]
 
@@ -43,9 +44,24 @@ Usage: node src/cli.js <command> [options]
                                  aborted mid-run. See README's "Exit codes" section.
   verify --id <id>               Replay and report, without updating the fingerprint.
   emit   --id <id>               Write a readable .js view of the flow (debug only).
+  validate --id <id>             Static structural check of flow.json's steps - no
+                                 browser, no network. Fast sanity check after a hand edit.
   init                           Scaffold a replayright.config.json in the current
-                                 directory with all defaults and explanations.
-  list                           List recorded sites.
+                                 directory with all defaults and explanations. Use
+                                 --force to overwrite one that already exists.
+  config --id <id>               Print the fully-resolved effective config for <id> -
+                                 defaults merged with replayright.config.json, env vars,
+                                 flow.json's own "config", and any CLI flags given here -
+                                 plus which layers actually contributed a value. Useful
+                                 for debugging "why isn't my config change taking effect".
+  list                           List recorded sites: verified/UNVERIFIED, headed/headless,
+                                 step count, tags, last-run status, and start URL, aligned
+                                 into a table. --porcelain reverts to the original plain
+                                 tab-separated line (no tags/last-run columns), for any
+                                 script parsing this command's output.
+  tag --id <id>                  Add/remove a name from flow.json's top-level "tags"
+                                 array (used by run --all --tag). Use --add=<name> and/or
+                                 --remove=<name>; both may be given in one call.
   run --all                      Batch-play every recorded site (or every site matching
                                  --tag). Reuses the exact same play() each site would get
                                  from play --id=<id> - one Xvfb/browser/drift/run-record
@@ -73,15 +89,21 @@ Options:
                                  JSON by extension). Default sites/<id>/output.csv.
                                  Written only if the flow tags at least one field.
   --sites-dir <path>             Where per-site recordings live. Default ./sites.
+  --force                        init only. Overwrite an existing replayright.config.json
+                                 instead of refusing to run.
   --all                          run only. Required - batch-plays every recorded site
                                  (subject to --tag). Reserved so a future "run --id=<id>"
                                  has room without a breaking change.
   --concurrency <n>              run only. How many sites' play() run at once. Default 1
                                  (sequential) - see the note on --log=json below for why.
   --tag <name>                   run only. Only play sites whose flow.json has <name> in
-                                 a top-level "tags" array, e.g. "tags": ["daily"]. Nothing
-                                 writes this array automatically; add it by hand. Omit
+                                 a top-level "tags" array, e.g. "tags": ["daily"]. Use the
+                                 tag command to add it, or edit flow.json by hand. Omit
                                  --tag to run every recorded site.
+  --add <name>                   tag only. Add <name> to flow.json's tags array.
+  --remove <name>                tag only. Remove <name> from flow.json's tags array.
+  --porcelain                    list only. Plain tab-separated output, no tags/last-run
+                                 columns - the original format, for scripts.
   --display <auto|off|:N>        How to get a real X display for a headed browser on a
                                  Linux box with no DISPLAY (e.g. an unattended cloud
                                  runner). "auto" (default) starts a scoped Xvfb on a free
@@ -460,6 +482,38 @@ function cmdEmit(args) {
   logInfo(`wrote ${path.relative(process.cwd(), out)} (debug only - flow.json is what runs)`);
 }
 
+// Reads the most recently written sites/<id>/runs/<iso>.json (run-record.js's filenames
+// are the sanitized ISO start timestamp, so a plain string sort is also chronological) and
+// summarizes it as one short status word, for `list`'s "last run" column. Returns 'never
+// run' rather than throwing when a site hasn't been played/verified yet, or when its
+// runs/ directory is unreadable for any reason - this is informational, not load-bearing.
+function lastRunSummary(siteDir) {
+  const dir = runsDir(siteDir);
+  let files;
+  try {
+    files = fs.readdirSync(dir).filter((f) => f.endsWith('.json')).sort();
+  } catch {
+    return 'never run';
+  }
+  if (!files.length) return 'never run';
+  try {
+    const record = JSON.parse(fs.readFileSync(path.join(dir, files[files.length - 1]), 'utf8'));
+    const when = record.startedAt ? record.startedAt.slice(0, 19).replace('T', ' ') : '?';
+    const outcome = record.drift?.status || (record.exitCode === 0 ? 'ok' : `exit ${record.exitCode}`);
+    return `${outcome} @ ${when}`;
+  } catch {
+    return 'unreadable run record';
+  }
+}
+
+// Pads every row's columns to the widest value in that column, for aligned table-style
+// output. `rows` is an array of same-length string arrays.
+function padColumns(rows) {
+  if (!rows.length) return rows;
+  const widths = rows[0].map((_, col) => Math.max(...rows.map((row) => row[col].length)));
+  return rows.map((row) => row.map((cell, col) => cell.padEnd(widths[col])).join('  '));
+}
+
 function cmdList(args) {
   const config = loadConfig({ cwd: process.cwd(), cliOverrides: { sitesDir: args.sitesDir, log: { format: args.log } } });
   setLogFormat(config.log.format);
@@ -470,15 +524,45 @@ function cmdList(args) {
     .filter((e) => fs.existsSync(path.join(sitesDir, e.name, 'flow.json')));
 
   if (!entries.length) return logInfo('no sites recorded yet');
-  for (const entry of entries) {
-    try {
-      const flow = JSON.parse(fs.readFileSync(path.join(sitesDir, entry.name, 'flow.json'), 'utf8'));
-      const headedness = flow.requiresHeaded ? 'headed' : 'headless';
-      console.log(`${entry.name}\t${flow.verified ? 'verified' : 'UNVERIFIED'}\t${headedness}\t${countSteps(flow.steps)} steps\t${flow.startUrl}`);
-    } catch (err) {
-      console.log(`${entry.name}\t(unreadable flow.json: ${err.message})`);
+
+  // --porcelain reproduces the plain tab-separated format this command always had,
+  // byte-for-byte, for any script parsing `list`'s output today - the richer aligned
+  // table below is additive, not a breaking change to that contract.
+  if (args.porcelain) {
+    for (const entry of entries) {
+      try {
+        const flow = JSON.parse(fs.readFileSync(path.join(sitesDir, entry.name, 'flow.json'), 'utf8'));
+        const headedness = flow.requiresHeaded ? 'headed' : 'headless';
+        console.log(`${entry.name}\t${flow.verified ? 'verified' : 'UNVERIFIED'}\t${headedness}\t${countSteps(flow.steps)} steps\t${flow.startUrl}`);
+      } catch (err) {
+        console.log(`${entry.name}\t(unreadable flow.json: ${err.message})`);
+      }
     }
+    return;
   }
+
+  const rows = entries.map((entry) => {
+    const siteDir = path.join(sitesDir, entry.name);
+    try {
+      const flow = JSON.parse(fs.readFileSync(path.join(siteDir, 'flow.json'), 'utf8'));
+      const headedness = flow.requiresHeaded ? 'headed' : 'headless';
+      const tags = Array.isArray(flow.tags) && flow.tags.length ? flow.tags.join(',') : '-';
+      return [
+        entry.name,
+        flow.verified ? 'verified' : 'UNVERIFIED',
+        headedness,
+        `${countSteps(flow.steps)} steps`,
+        tags,
+        lastRunSummary(siteDir),
+        flow.startUrl,
+      ];
+    } catch (err) {
+      return [entry.name, `(unreadable flow.json: ${err.message})`, '', '', '', '', ''];
+    }
+  });
+
+  const header = ['ID', 'STATUS', 'MODE', 'STEPS', 'TAGS', 'LAST RUN', 'START URL'];
+  for (const line of padColumns([header, ...rows])) console.log(line);
 }
 
 // Same directory scan cmdList uses (deliberately re-walked rather than calling index.js's
@@ -665,10 +749,81 @@ async function cmdRun(args) {
   process.exitCode = succeeded === results.length ? 0 : 1;
 }
 
-function cmdInit() {
+// config --id=<id> - prints the fully-resolved config exactly as play/verify would build
+// it (same loadConfig() layering: defaults -> file -> env -> flow.config -> CLI), plus
+// which layers actually contributed a value, for debugging "why isn't my config change
+// taking effect" without tracing loadConfig() by hand. Doesn't require a flow.json to
+// exist yet - a site not recorded yet just has no flow.config layer to merge.
+function cmdConfig(args) {
+  const config = loadConfig({ cwd: process.cwd(), cliOverrides: { sitesDir: args.sitesDir, log: { format: args.log } } });
+  const resolvedSitesDir = resolveSitesDir(config);
+  const flowPath = sitePaths(args.id, resolvedSitesDir).flow;
+
+  let flow;
+  if (fs.existsSync(flowPath)) {
+    flow = JSON.parse(fs.readFileSync(flowPath, 'utf8'));
+  } else {
+    logWarn(`no flow.json for "${args.id}" yet at ${flowPath} - printing config without its flow.config layer`);
+  }
+
+  const resolved = loadConfig({ cwd: process.cwd(), flow, cliOverrides: { sitesDir: args.sitesDir }, cliArgs: args });
+  console.log(JSON.stringify(resolved, null, 2));
+  console.log(`\n# resolved from layers: ${resolved.__meta.layers.join(' -> ')}`);
+  console.log(`# config file: ${resolved.__meta.configPath || '(none found)'}`);
+  console.log(`# sitesDir resolves to: ${resolvedSitesDir}`);
+  if (resolved.__meta.warnings.length) {
+    console.log('# warnings:');
+    for (const w of resolved.__meta.warnings) console.log(`#   ${w}`);
+  }
+}
+
+// tag --id=<id> --add=<name> / --remove=<name> - the first code to ever write flow.json's
+// top-level "tags" array (see enumerateSitesForRun above: today it is exclusively
+// hand-edited, per this file's own --tag documentation). Same read-JSON/modify/write-back
+// shape used everywhere else flow.json is touched by hand.
+function cmdTag(args) {
+  const config = loadConfig({ cwd: process.cwd(), cliOverrides: { sitesDir: args.sitesDir } });
+  const resolvedSitesDir = resolveSitesDir(config);
+  const flowPath = sitePaths(args.id, resolvedSitesDir).flow;
+  const flow = loadFlow(args.id, resolvedSitesDir);
+
+  const tags = new Set(Array.isArray(flow.tags) ? flow.tags : []);
+  if (args.tagAdd) tags.add(args.tagAdd);
+  if (args.tagRemove) tags.delete(args.tagRemove);
+  flow.tags = [...tags];
+
+  fs.writeFileSync(flowPath, JSON.stringify(flow, null, 2));
+  logInfo(`${args.id} tags: ${flow.tags.length ? flow.tags.join(', ') : '(none)'}`);
+}
+
+// validate --id=<id> - a pure structural check of flow.json's shape (src/flow-validate.js),
+// no browser, no network, no config resolution needed. For a fast sanity check right after
+// a manual flow.json edit, since the only way to find out a hand edit broke something today
+// is to run a full headed/headless verify or play against the live site.
+function cmdValidate(args) {
+  const resolvedSitesDir = resolveSitesDir(loadConfig({ cwd: process.cwd(), cliOverrides: { sitesDir: args.sitesDir } }));
+  const flowPath = sitePaths(args.id, resolvedSitesDir).flow;
+  if (!fs.existsSync(flowPath)) {
+    throw new Error(`No flow for "${args.id}" (expected ${path.relative(process.cwd(), flowPath)}). Record it first.`);
+  }
+  const flow = JSON.parse(fs.readFileSync(flowPath, 'utf8'));
+  const { errors, warnings } = validateFlow(flow);
+
+  for (const w of warnings) logWarn(w);
+  for (const e of errors) logError(e);
+
+  if (errors.length) {
+    logError(`${args.id}: ${errors.length} error(s)`);
+    process.exitCode = 1;
+  } else {
+    logInfo(`${args.id}: flow.json is structurally valid${warnings.length ? ` (${warnings.length} warning(s))` : ''}`);
+  }
+}
+
+function cmdInit(args = {}) {
   const configPath = path.join(process.cwd(), CONFIG_FILENAME);
-  if (fs.existsSync(configPath)) {
-    throw new Error(`${CONFIG_FILENAME} already exists at ${configPath}. Remove it first if you want to regenerate it.`);
+  if (fs.existsSync(configPath) && !args.force) {
+    throw new Error(`${CONFIG_FILENAME} already exists at ${configPath}. Remove it first, or re-run with --force to overwrite it.`);
   }
 
   const defaultConfig = defaults();
@@ -812,6 +967,10 @@ async function main() {
       all: { type: 'boolean' },
       concurrency: { type: 'string' },
       tag: { type: 'string' },
+      add: { type: 'string' },
+      remove: { type: 'string' },
+      force: { type: 'boolean' },
+      porcelain: { type: 'boolean' },
       help: { type: 'boolean' },
     },
     allowPositionals: true,
@@ -856,6 +1015,13 @@ async function main() {
     all: values.all ?? false,
     concurrency: values.concurrency ? Number(values.concurrency) : undefined,
     tag: values.tag,
+    // tag command only.
+    tagAdd: values.add,
+    tagRemove: values.remove,
+    // init only.
+    force: values.force ?? false,
+    // list only.
+    porcelain: values.porcelain ?? false,
   };
   if (command !== 'init' && command !== 'list' && command !== 'run' && !args.id) {
     throw new Error(`${command} needs --id <id>`);
@@ -871,9 +1037,12 @@ async function main() {
   if (command === 'play') return cmdPlay(args);
   if (command === 'verify') return cmdVerify(args);
   if (command === 'emit') return cmdEmit(args);
-  if (command === 'init') return cmdInit();
+  if (command === 'init') return cmdInit(args);
   if (command === 'list') return cmdList(args);
   if (command === 'run') return cmdRun(args);
+  if (command === 'config') return cmdConfig(args);
+  if (command === 'tag') return cmdTag(args);
+  if (command === 'validate') return cmdValidate(args);
 }
 
 main().catch((err) => {

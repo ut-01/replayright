@@ -156,9 +156,10 @@ every matching site, and the process exits non-zero only if at least one of them
   "tags": ["daily", "jobs"] }
 ```
 
-**Nothing writes this array automatically** - same as `flow.config` (see below), it is
-hand-added by whoever decides a site belongs in a given scheduled batch. No `--tag` means
-"run every recorded site", tagged or not.
+Add or remove a tag with `replayright tag --id=<id> --add=<name>` / `--remove=<name>`
+(both may be given in one call), or edit the array by hand - it is still plain
+hand-editable JSON, same as `flow.config` (see below). No `--tag` means "run every
+recorded site", tagged or not.
 
 `--concurrency=<n>` (default `1`, i.e. sequential) bounds how many sites' `play()` run at
 once. Raising it trades wall-clock time for two things worth knowing before you do:
@@ -224,6 +225,16 @@ Four step kinds, nestable:
   "key": "Title",                    // the pill's label, or whatever you typed into "+ Field"
   "relativeSelectors": ["..."] }     // relative to the current entry; "" means the entry itself
 ```
+
+### Checking a hand edit: `validate`
+
+Since `flow.json` is meant to be hand-edited (selector reordering, adding a `tags`
+array, swapping in a `{{env:...}}` secret placeholder), a typo or a moved brace is
+easy to introduce. `replayright validate --id=<id>` does a pure structural check of
+the shape above - unknown step kind, an `extract` outside any `foreach`, an empty
+selector array, a `repeat`/`foreach` with nothing in its body - with **no browser
+and no network call**, so it's a fast sanity check to run right after an edit,
+before spending a full `verify` cycle against the live site.
 
 ### Secrets in `fill` steps
 

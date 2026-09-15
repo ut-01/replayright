@@ -1,4 +1,4 @@
-# replaywright
+# replayright
 
 *Bind a working once. Press two sigils into its seams. Let it wake and walk alone, every
 dawn, needing no further counsel from you.*
@@ -11,10 +11,13 @@ What it does at the appointed hour is fixed and mute — no spirit deliberates, 
 consulted; it walks the same steps it was shown.
 
 ```
+replayright record --id=example --url="https://example.com/search?category=electronics"
+replayright verify --id=example   # replay headed, per-step report
+replayright play   --id=example   # headless; what a schedule runs
+replayright list
+
+# no install (npm link / global install) yet? the npm scripts work the same way:
 npm run record -- --id=example --url="https://example.com/search?category=electronics"
-npm run verify -- --id=example    # replay headed, per-step report
-npm run play   -- --id=example    # headless; what a schedule runs
-npm run list
 ```
 
 The rite of first binding, and the reference for what the grimoire's pages may contain,

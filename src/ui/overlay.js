@@ -177,6 +177,10 @@ function installOverlay(config, html, css) {
         + 'font:inherit;color:#fff;}'
       + '.pr-level-panel button:focus-visible{outline:2px solid #0a84ff;outline-offset:1px;}'
       + '.pr-level-panel button:disabled{opacity:.35;cursor:default;}'
+      // `all:unset` above cancels the `[hidden]` UA rule's display:none (author
+      // specificity wins over the UA stylesheet) - restore it explicitly so a hidden
+      // button (e.g. Preview, on stages with no previewDetails()) actually disappears.
+      + '.pr-level-panel button[hidden]{display:none;}'
       + '.pr-level-reason{color:rgba(255,255,255,.75);margin-bottom:6px;}'
       + '.pr-level-crumbs{display:flex;flex-wrap:wrap;align-items:center;gap:2px 4px;margin-bottom:8px;'
         + 'font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;}'
@@ -194,6 +198,10 @@ function installOverlay(config, html, css) {
       + '.pr-level-info--good{color:#8ef0a8;}'
       + '.pr-level-info--warn{color:#ffd60a;}'
       + '.pr-level-info--bad{color:#ff8a80;}'
+      + '.pr-level-preview-detail{margin-top:8px;padding:8px;border-radius:6px;'
+        + 'background:rgba(255,255,255,.06);color:rgba(255,255,255,.85);white-space:pre-wrap;'
+        + 'word-break:break-word;font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;}'
+      + '.pr-level-preview-detail[hidden]{display:none;}'
       + '.pr-settings-panel{position:fixed;z-index:2147483646;background:rgba(17,17,17,.96);'
         + 'color:#fff;border-radius:8px;padding:12px;box-shadow:0 4px 16px rgba(0,0,0,.35);'
         + 'font:12px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;'
@@ -398,11 +406,13 @@ function installOverlay(config, html, css) {
       + '<div class="pr-level-actions">'
       + '<button type="button" data-pr="level-up" aria-label="' + PREFIX + 'ui:level:up" title="Select the parent (Arrow Up)"><span aria-hidden="true">▲ Parent</span></button>'
       + '<button type="button" data-pr="level-down" aria-label="' + PREFIX + 'ui:level:down" title="Select the child, back towards what you clicked (Arrow Down)"><span aria-hidden="true">▼ Child</span></button>'
+      + '<button type="button" data-pr="level-preview" aria-label="' + PREFIX + 'ui:level:preview" title="Show the full ranked candidate breakdown (same as window.__playright.pickPreview)"><span aria-hidden="true">🔍 Preview</span></button>'
       + '<span class="pr-level-spacer"></span>'
       + '<button type="button" data-pr="level-use" class="pr-level-use" aria-label="' + PREFIX + 'ui:level:use" title="Use this element (Enter)"><span aria-hidden="true">✓ Use</span></button>'
       + '<button type="button" data-pr="level-cancel" aria-label="' + PREFIX + 'ui:level:cancel" title="Back to picking (Escape)"><span aria-hidden="true">✕</span></button>'
       + '</div>'
-      + '<div class="pr-level-info" data-pr="level-info"></div>';
+      + '<div class="pr-level-info" data-pr="level-info"></div>'
+      + '<div class="pr-level-preview-detail" data-pr="level-preview-detail" hidden></div>';
     applyPanelZ(levelPanel);
     document.documentElement.appendChild(levelPanel);
 
@@ -410,12 +420,39 @@ function installOverlay(config, html, css) {
     levelPanel.querySelector('[data-pr="level-down"]').addEventListener('click', () => stepLevel(-1));
     levelPanel.querySelector('[data-pr="level-use"]').addEventListener('click', () => useLevel());
     levelPanel.querySelector('[data-pr="level-cancel"]').addEventListener('click', () => unfreeze());
+    levelPanel.querySelector('[data-pr="level-preview"]').addEventListener('click', () => togglePreviewDetail());
     levelPanel.querySelector('[data-pr="level-crumbs"]').addEventListener('click', (e) => {
       const crumb = e.target.closest && e.target.closest('[data-level-idx]');
       if (!crumb || !frozen) return;
       frozen.idx = Number(crumb.getAttribute('data-level-idx'));
       renderLevel();
     });
+  }
+
+  // Expands/collapses the full ranked-candidate breakdown for the level currently
+  // selected in the stepper - the same data window.__playright.pickPreview() computes
+  // (ranked item-selector candidates, occurrence count, item tag), surfaced here as a
+  // visible button instead of requiring a devtools console round-trip. Only stages that
+  // define previewDetails() show the button at all (currently: the item-pick stage,
+  // since that is the one chooseItem() decision worth double-checking before committing).
+  function togglePreviewDetail() {
+    if (!frozen || !pickStage?.previewDetails) return;
+    const detailEl = levelPanel.querySelector('[data-pr="level-preview-detail"]');
+    if (!detailEl.hidden) { detailEl.hidden = true; return; }
+
+    const el = frozen.chain[frozen.idx];
+    const details = el.isConnected
+      ? pickStage.previewDetails(el, { raw: frozen.raw, suggested: frozen.suggested })
+      : null;
+    if (!details) {
+      detailEl.textContent = 'No preview available for this level.';
+    } else {
+      detailEl.textContent = 'Ranked candidates: ' + details.candidates.join('  >  ')
+        + '\nOccurrence count (raw click): ' + details.occurrenceCount
+        + '\nItem tag: <' + details.itemTag + '>';
+    }
+    detailEl.hidden = false;
+    positionLevelPanel(el.isConnected ? el : frozen.raw);
   }
 
   function applyPanelZ(el) {
@@ -474,6 +511,15 @@ function installOverlay(config, html, css) {
     levelPanel.querySelector('[data-pr="level-up"]').disabled = idx >= chain.length - 1;
     levelPanel.querySelector('[data-pr="level-down"]').disabled = idx <= 0;
     levelPanel.querySelector('[data-pr="level-use"]').disabled = !info.canUse;
+
+    // Only stages that can compute the ranked-candidate breakdown (currently the
+    // item-pick stage) show the button at all - hidden, not just disabled, so it
+    // doesn't imply a feature the container/field stages don't have.
+    const previewBtn = levelPanel.querySelector('[data-pr="level-preview"]');
+    previewBtn.hidden = !pickStage?.previewDetails;
+    // Stale from a level the user has since moved away from - collapse it rather than
+    // showing detail for the wrong element.
+    levelPanel.querySelector('[data-pr="level-preview-detail"]').hidden = true;
 
     highlight(el.isConnected ? el : null, idx === 0 ? 'clicked' : '▲' + idx);
     levelPanel.hidden = false;
@@ -838,6 +884,19 @@ function installOverlay(config, html, css) {
         const via = chosen.count + ' items via ' + chosen.cands[0].selector;
         if (chosen.exact) return { tone: 'good', text: via, canUse: true };
         return { tone: 'warn', text: via + ', but what you clicked appears ' + chosen.occurrence.count + ' time(s)', canUse: true };
+      },
+      // The full breakdown behind describe()'s one-line summary - same fields
+      // window.__playright.pickPreview() returns, computed from the live selection
+      // instead of via querySelector'd strings against a saved snapshot. Backs the
+      // level panel's "Preview" button (togglePreviewDetail above).
+      previewDetails: (el, ctx) => {
+        const chosen = resolveAt(el, ctx);
+        if (!chosen) return null;
+        return {
+          candidates: chosen.cands.map((c) => c.selector),
+          occurrenceCount: chosen.occurrence.count,
+          itemTag: chosen.level.tagName.toLowerCase(),
+        };
       },
       commit: (el, ctx) => (el === ctx.suggested ? onItem(ctx.raw) : onItem(el, { pinned: true })),
     });
