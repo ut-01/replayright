@@ -1,0 +1,39 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><style>#results{padding:24px;list-style:none;margin:0} li.card{padding:8px;margin:4px 0;border:1px solid #ddd}</style>
+  <title>Jobs - load more that keeps answering but stops growing</title></head>
+<body>
+  <h1>Open roles</h1>
+  <!-- Unlike loadmore/index.html, "Load More" is NEVER disabled or removed - it stays
+       present and enabled even after the one real batch is exhausted, so `untilGone`
+       never fires. Stands in for a site whose "Load More"/pagination control keeps
+       answering clicks long after the list has stopped actually growing. -->
+  <ul id="results">
+    <li class="card"><a class="card-link" href="#j1">Frontend Engineer</a><span class="loc">Bangalore</span></li>
+    <li class="card"><a class="card-link" href="#j2">Backend Engineer</a><span class="loc">Pune</span></li>
+    <li class="card"><a class="card-link" href="#j3">Data Engineer</a><span class="loc">Chennai</span></li>
+  </ul>
+  <button id="load-more">Load More</button>
+  <script>
+    const batches = [
+      ['Platform Engineer|Hyderabad|j4', 'QA Engineer|Delhi|j5', 'DevOps Engineer|Mumbai|j6'],
+    ];
+    const list = document.getElementById('results');
+    const btn = document.getElementById('load-more');
+    btn.addEventListener('click', () => {
+      const batch = batches.shift();
+      if (batch) {
+        for (const row of batch) {
+          const [title, loc, id] = row.split('|');
+          const li = document.createElement('li');
+          li.className = 'card';
+          li.innerHTML = `<a class="card-link" href="#${id}">${title}</a><span class="loc">${loc}</span>`;
+          list.appendChild(li);
+        }
+      }
+      // Deliberately no disabling here, even once `batches` is empty - clicking again
+      // is a no-op, but the control itself stays present and enabled forever.
+    });
+  </script>
+</body>
+</html>

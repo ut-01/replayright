@@ -189,6 +189,10 @@ don't "simplify" them away):
 - `repeat` never re-checks `untilGone` *between* iterations — only the advance action itself
   reporting "nothing to click" ends the loop. Checking between iterations dropped the last
   page of every site.
+- `repeat` also ends early when its nested `foreach` reports no genuinely new items for a
+  whole iteration (reusing the same same-first-item/count comparison `foreachProgress`
+  already makes for "Load More" dedup) — covers an advance control that stays present and
+  enabled forever instead of vanishing/disabling, which `untilGone` cannot detect on its own.
 - `settle` (content under a selector must change) exists for SPAs that swap the list in
   place, where Playwright has nothing to auto-wait on.
 - Delays are applied only when a real page load happened, not around every click.

@@ -505,7 +505,12 @@ async function runRepeat(step, ctx) {
   const foreachProgress = new Map();
 
   for (let i = 0; i < times; i += 1) {
-    const iterCtx = { ...ctx, path: `${ctx.path}repeat[${i}]/`, repeatExit, foreachProgress };
+    // Reset every iteration - each page-turn is judged on its own, not cumulatively.
+    // `runForeach` sets `checked` only when it's actually inside this repeat's body
+    // (nothing to check for a repeat with no foreach at all), and sets `sawNew` using
+    // the same same-list-vs-new-page comparison it already makes for `foreachProgress`.
+    const noNewItems = { checked: false, sawNew: false };
+    const iterCtx = { ...ctx, path: `${ctx.path}repeat[${i}]/`, repeatExit, foreachProgress, noNewItems };
     const before = settleSelector ? await safeText(ctx.page, settleSelector) : null;
 
     try {
@@ -525,6 +530,11 @@ async function runRepeat(step, ctx) {
 
     if (repeatExit?.done) {
       logInfo(`${ctx.path}repeat: stopping after ${i + 1} iteration(s) - nothing left to advance to`, { path: ctx.path });
+      break;
+    }
+
+    if (noNewItems.checked && !noNewItems.sawNew) {
+      logInfo(`${ctx.path}repeat: stopping after ${i + 1} iteration(s) - the last page yielded no new items`, { path: ctx.path });
       break;
     }
 
@@ -624,8 +634,9 @@ async function runForeach(step, ctx) {
   const progress = ctx.foreachProgress;
   const firstItemText = progress ? await safeLocatorText(first.locator.nth(0)) : null;
   let startIndex = 0;
+  let prev = null;
   if (progress) {
-    const prev = progress.get(step);
+    prev = progress.get(step);
     if (prev && total >= prev.count && firstItemText !== null && firstItemText === prev.firstItemText) {
       startIndex = prev.count;
     }
@@ -633,6 +644,15 @@ async function runForeach(step, ctx) {
 
   if (startIndex >= total) {
     logInfo(`${ctx.path}foreach: no new items since last time (still ${total}) - nothing to do this round`, { path: ctx.path });
+  }
+
+  // Tell the enclosing repeat (if any) whether this page-turn actually produced
+  // anything new, reusing the exact comparison above rather than a second one - a
+  // first sighting (no `prev` yet) always counts as "new" so a normal loop still
+  // gets to run at least once before this can end it.
+  if (ctx.noNewItems) {
+    ctx.noNewItems.checked = true;
+    if (!prev || total - startIndex > 0) ctx.noNewItems.sawNew = true;
   }
 
   for (let i = startIndex; i < total; i += 1) {

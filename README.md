@@ -77,10 +77,6 @@ the earliest word that the page beyond has changed its shape.
 
 ## What the working cannot yet do
 
-- **`times: 5` is a ceiling, not a reason to stop.** `untilGone` ends the loop cleanly
-  once the turning-page control vanishes or falls dormant. The truer law — halt once a
-  page yields nothing *new* — asks for memory of what has already been seen, and that
-  memory is not yet kept.
 - **Descending into one item's own page can unmake the list behind it.** After the
   working steps into item *i*'s own chamber, whatever was gathered by "load more" may be
   gone on return. This is a fault of the house being visited, not of the working, and

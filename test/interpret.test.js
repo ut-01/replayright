@@ -129,6 +129,47 @@ test('a "Load More" control that appends in place does not re-visit items alread
   });
 });
 
+// --- a "Load More" that keeps answering long after the list stopped growing -----
+
+const loadMoreStallFlow = {
+  siteId: 'fixture-loadmore-stall',
+  startUrl: fixture('loadmore-stall', 'index.html'),
+  steps: [
+    {
+      kind: 'repeat',
+      times: 6,
+      untilGone: '#load-more',
+      settle: { selector: '#results', timeoutMs: 300 },
+      body: [
+        {
+          kind: 'foreach',
+          parentSelectors: ['#results'],
+          itemSelectors: ['li.card'],
+          body: [
+            { kind: 'action', scope: 'item', relativeSelectors: ['.card-link'], action: { name: 'click' } },
+          ],
+        },
+        { kind: 'action', scope: 'page', selectors: ['#load-more'], action: { name: 'click' } },
+      ],
+    },
+  ],
+};
+
+test('a "Load More" control that never disables still stops once nothing new appears', async () => {
+  await withPage(async (page) => {
+    // `#load-more` is never disabled or removed in this fixture, so `untilGone` never
+    // fires - without this repeat's own "did anything new show up" check, it would
+    // burn through all 6 `times` clicking a control that keeps answering with nothing.
+    const stats = await runFlow(loadMoreStallFlow, { page, ...FAST });
+
+    // 3 initial + 3 appended by the one real batch = 6 unique items. The 3rd click is
+    // a no-op (batch exhausted); the loop should stop right there, well short of 6.
+    assert.strictEqual(stats.repeatIterations, 3, 'should stop once a page-turn yields nothing new, not run all 6 times');
+    assert.strictEqual(stats.foreachIterations, 6, 'should visit each of the 6 real cards exactly once');
+    assert.deepStrictEqual(stats.errors, []);
+  });
+});
+
 test('item-scoped actions act on the right item, with no navigation', async () => {
   await withPage(async (page) => {
     const flow = {
