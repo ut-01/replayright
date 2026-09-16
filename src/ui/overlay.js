@@ -46,6 +46,17 @@ function installOverlay(config, html, css) {
     return value || fallback;
   }
 
+  // Same bridge as zTier(), generalized to any --pr-chrome-* token - lets the
+  // light-DOM picker/settings panels (ensureChromeStyle() below) draw colours,
+  // radius and shadow from the SAME :host custom properties overlay.css declares
+  // for the toolbar itself, instead of a second hardcoded copy of the same values
+  // that can silently drift out of sync with the toolbar's own look.
+  function chromeVar(name, fallback) {
+    if (!host.isConnected) return fallback;
+    const value = getComputedStyle(host).getPropertyValue(name).trim();
+    return value || fallback;
+  }
+
   const textOf = (el) => {
     const raw = (el.value !== undefined && el.value !== null && el.value !== '')
       ? String(el.value)
@@ -72,6 +83,8 @@ function installOverlay(config, html, css) {
   template.innerHTML = html;
   shadow.appendChild(template.content.cloneNode(true));
 
+  const row = shadow.querySelector('[data-pr="row"]');
+  const dragHandle = shadow.querySelector('[data-pr="drag-handle"]');
   const openStrip = shadow.querySelector('[data-pr="open-strip"]');
   const rBtn = shadow.querySelector('[data-pr="r-btn"]');
   const fBtn = shadow.querySelector('[data-pr="f-btn"]');
@@ -143,6 +156,14 @@ function installOverlay(config, html, css) {
     if (document.getElementById(CHROME_STYLE_ID)) return;
     const chromeStyle = document.createElement('style');
     chromeStyle.id = CHROME_STYLE_ID;
+    // Panel background/shadow/radius are read off the SAME --pr-chrome-* tokens
+    // overlay.css declares on :host for the toolbar itself (via chromeVar(), the
+    // same bridge zTier() already uses for z-index) - one dark design language for
+    // the toolbar and these light-DOM panels instead of two hardcoded copies of the
+    // same values that could silently drift apart.
+    const chromeBg = chromeVar('--pr-chrome-bg', 'rgba(17, 17, 17, .96)');
+    const chromeShadow = chromeVar('--pr-chrome-shadow', '0 4px 16px rgba(0, 0, 0, .35)');
+    const chromeRadius = chromeVar('--pr-chrome-radius', '8px');
     chromeStyle.textContent =
       '.pr-toast-layer{position:fixed;top:16px;right:16px;z-index:2147483646;'
         + 'display:flex;flex-direction:column;gap:8px;pointer-events:none;'
@@ -169,8 +190,8 @@ function installOverlay(config, html, css) {
       + '.pr-pick-box{position:fixed;pointer-events:none;box-sizing:border-box;display:none;'
         + 'border:2px solid #ff3366;background:rgba(255,51,102,.1);border-radius:2px;}'
       + '.pr-level-panel{position:fixed;box-sizing:border-box;max-width:min(460px,calc(100vw - 16px));'
-        + 'padding:10px 12px;border-radius:8px;background:rgba(17,17,17,.96);color:#fff;'
-        + 'box-shadow:0 4px 16px rgba(0,0,0,.35);pointer-events:auto;cursor:default;text-align:left;'
+        + 'padding:10px 12px;border-radius:' + chromeRadius + ';background:' + chromeBg + ';color:#fff;'
+        + 'box-shadow:' + chromeShadow + ';pointer-events:auto;cursor:default;text-align:left;'
         + 'font:12px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;}'
       + '.pr-level-panel[hidden]{display:none;}'
       + '.pr-level-panel button{all:unset;box-sizing:border-box;cursor:pointer;border-radius:4px;'
@@ -202,8 +223,8 @@ function installOverlay(config, html, css) {
         + 'background:rgba(255,255,255,.06);color:rgba(255,255,255,.85);white-space:pre-wrap;'
         + 'word-break:break-word;font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;}'
       + '.pr-level-preview-detail[hidden]{display:none;}'
-      + '.pr-settings-panel{position:fixed;z-index:2147483646;background:rgba(17,17,17,.96);'
-        + 'color:#fff;border-radius:8px;padding:12px;box-shadow:0 4px 16px rgba(0,0,0,.35);'
+      + '.pr-settings-panel{position:fixed;z-index:2147483646;background:' + chromeBg + ';'
+        + 'color:#fff;border-radius:' + chromeRadius + ';padding:12px;box-shadow:' + chromeShadow + ';'
         + 'font:12px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;'
         + 'min-width:160px;right:80px;top:12px;}'
       + '.pr-settings-panel[hidden]{display:none;}'
@@ -1124,6 +1145,41 @@ function installOverlay(config, html, css) {
   // for - and no leaked duplicate from - a second synthetic marker click.
   let settingsPanel = null;
 
+  // --- position & orientation state ---------------------------------------------
+  //
+  // Two independent axes: WHERE the toolbar sits (positionState) and how R/F/gear
+  // lay out within it (orientationState). Both start at the defaults overlay.css's
+  // :host rule and the settings radios below already assumed (top-right corner,
+  // vertical) and are mutated ONLY through applyPosition() / applyFreePosition() /
+  // applyOrientation() further down - a Settings radio click, a drag, and
+  // window.__playright.restore() after a navigation all funnel through the same
+  // three functions, so there is exactly one place that decides what the
+  // toolbar's position/orientation actually is right now.
+  let positionState = { mode: 'corner', corner: 'top-right' };
+  let orientationState = 'vertical';
+
+  const CORNER_STYLES = {
+    'top-right': { top: '12px', right: '12px', bottom: 'auto', left: 'auto', align: 'flex-end' },
+    'top-left': { top: '12px', left: '12px', bottom: 'auto', right: 'auto', align: 'flex-start' },
+    'bottom-right': { bottom: '12px', right: '12px', top: 'auto', left: 'auto', align: 'flex-end' },
+    'bottom-left': { bottom: '12px', left: '12px', top: 'auto', right: 'auto', align: 'flex-start' },
+  };
+
+  // Keeps the Settings radios honest about the CURRENT position/orientation,
+  // regardless of whether it got there via a radio click, a drag-to-corner snap,
+  // a free-form drop (no radio applies - both groups go unchecked), or restore()
+  // after a navigation. `.checked = true` does not fire `change`, so this never
+  // feeds back into applyPosition()/applyOrientation() itself.
+  function syncSettingsRadios() {
+    if (!settingsPanel) return;
+    for (const radio of settingsPanel.querySelectorAll('input[name="position"]')) {
+      radio.checked = positionState.mode === 'corner' && radio.value === positionState.corner;
+    }
+    for (const radio of settingsPanel.querySelectorAll('input[name="orientation"]')) {
+      radio.checked = radio.value === orientationState;
+    }
+  }
+
   function initSettingsPanel() {
     ensureChromeStyle();
     if (settingsPanel) return;
@@ -1207,46 +1263,195 @@ function installOverlay(config, html, css) {
     settingsPanel.style.bottom = openUp ? (window.innerHeight - rect.bottom) + 'px' : 'auto';
   }
 
-  function toggleSettingsPanel() {
-    if (!settingsPanel) initSettingsPanel();
-    if (settingsPanel.hidden) positionSettingsPanel();
-    settingsPanel.hidden = !settingsPanel.hidden;
+  // Bug fix: positionSettingsPanel() above only ever reads a LIVE
+  // getBoundingClientRect() off the gear button, but until now nothing called it
+  // again after the panel opened - it was only invoked once, at open time (and
+  // whenever applyPosition()/applyOrientation() themselves moved the toolbar). A
+  // plain viewport resize or device rotation while the panel was open left it
+  // pinned to those stale coordinates, visibly detached from the gear button
+  // (real, reported symptom: "when orientation changes the menu stays in the old
+  // place"). This mirrors the picker/level-panel's existing resize/scroll
+  // handling (see onViewportChange, openPicker/closePicker above) - registered
+  // only while the settings panel is actually open, torn down when it closes, so
+  // a closed panel costs nothing.
+  function onSettingsViewportChange() {
+    positionSettingsPanel();
   }
 
-  function applyPosition(position) {
-    const positions = {
-      'top-right': { top: '12px', right: '12px', bottom: 'auto', left: 'auto', transform: 'none', align: 'flex-end' },
-      'top-left': { top: '12px', left: '12px', bottom: 'auto', right: 'auto', transform: 'none', align: 'flex-start' },
-      'bottom-right': { bottom: '12px', right: '12px', top: 'auto', left: 'auto', transform: 'none', align: 'flex-end' },
-      'bottom-left': { bottom: '12px', left: '12px', top: 'auto', right: 'auto', transform: 'none', align: 'flex-start' },
-    };
+  function openSettingsPanel() {
+    if (!settingsPanel) initSettingsPanel();
+    positionSettingsPanel();
+    window.addEventListener('resize', onSettingsViewportChange, { passive: true });
+    window.addEventListener('orientationchange', onSettingsViewportChange);
+    settingsPanel.hidden = false;
+  }
 
-    if (positions[position]) {
-      const styles = positions[position];
-      host.style.top = styles.top;
-      host.style.right = styles.right;
-      host.style.bottom = styles.bottom;
-      host.style.left = styles.left;
-      host.style.transform = styles.transform;
-      // `align-items` governs the cross-axis alignment of the open-strip text and the
-      // field pills, both of which right-align by default (overlay.css assumes the
-      // toolbar's default top-right corner) - left-anchored positions need the mirror
-      // image or that content overhangs past the toolbar's own left edge.
-      host.style.alignItems = styles.align;
-      host.style.setProperty('--pr-align', styles.align);
-    }
-    // The gear button just moved with the toolbar; keep an already-open panel glued to it.
+  function closeSettingsPanel() {
+    if (!settingsPanel || settingsPanel.hidden) return;
+    window.removeEventListener('resize', onSettingsViewportChange);
+    window.removeEventListener('orientationchange', onSettingsViewportChange);
+    settingsPanel.hidden = true;
+  }
+
+  function toggleSettingsPanel() {
+    if (!settingsPanel) initSettingsPanel();
+    if (settingsPanel.hidden) openSettingsPanel();
+    else closeSettingsPanel();
+  }
+
+  // Canonical `mode: 'corner'` setter - used by the Settings radios (a real
+  // recorded click, so record.js learns the new corner straight from the
+  // marker on that click) and by the drag handle's snap-on-release (not a
+  // recorded action, so the drag handler sends it out-of-band; see onDragEnd).
+  function applyPosition(corner) {
+    const styles = CORNER_STYLES[corner];
+    if (!styles) return;
+    positionState = { mode: 'corner', corner };
+    host.style.top = styles.top;
+    host.style.right = styles.right;
+    host.style.bottom = styles.bottom;
+    host.style.left = styles.left;
+    host.style.transform = 'none';
+    // `align-items` governs the cross-axis alignment of the open-strip text and the
+    // field pills, both of which right-align by default (overlay.css assumes the
+    // toolbar's default top-right corner) - left-anchored positions need the mirror
+    // image or that content overhangs past the toolbar's own left edge.
+    host.style.alignItems = styles.align;
+    host.style.setProperty('--pr-align', styles.align);
+    // The gear button (and, mid-drag, the whole toolbar) just moved; keep an
+    // already-open Settings panel glued to it, and the radios truthful.
     if (settingsPanel && !settingsPanel.hidden) positionSettingsPanel();
+    syncSettingsRadios();
+  }
+
+  // Free-form placement (drag), independent of the 4 named corners. Clamped into
+  // the viewport so a drag can never leave the toolbar partly or fully
+  // off-screen - also reused on window resize (see the always-on resize listener
+  // below) to pull an already-placed free-form toolbar back on screen after the
+  // window shrinks out from under it.
+  function applyFreePosition(left, top) {
+    const rect = host.getBoundingClientRect();
+    const width = rect.width || 0;
+    const height = rect.height || 0;
+    const clampedLeft = Math.min(Math.max(0, left), Math.max(0, window.innerWidth - width));
+    const clampedTop = Math.min(Math.max(0, top), Math.max(0, window.innerHeight - height));
+    positionState = { mode: 'free', left: clampedLeft, top: clampedTop };
+    host.style.left = clampedLeft + 'px';
+    host.style.top = clampedTop + 'px';
+    host.style.right = 'auto';
+    host.style.bottom = 'auto';
+    host.style.transform = 'none';
+    // Same near-edge heuristic positionSettingsPanel() already uses for which
+    // quadrant to open into, reused here so free-form placement isn't a third
+    // independent implementation of "which side of the screen is this nearer to."
+    const align = clampedLeft > window.innerWidth / 2 ? 'flex-end' : 'flex-start';
+    host.style.alignItems = align;
+    host.style.setProperty('--pr-align', align);
+    if (settingsPanel && !settingsPanel.hidden) positionSettingsPanel();
+    syncSettingsRadios();
   }
 
   function applyOrientation(orientation) {
-    host.style.flexDirection = orientation === 'horizontal' ? 'row' : 'column';
+    orientationState = orientation === 'horizontal' ? 'horizontal' : 'vertical';
+    host.style.flexDirection = orientationState === 'horizontal' ? 'row' : 'column';
+    // CSS hook (see overlay.css's .pr-drag-handle rule) so the grip glyph can lie
+    // on its side in horizontal layout - a stable attribute instead of
+    // string-matching the style attribute.
+    host.setAttribute('data-orientation', orientationState);
     if (settingsPanel && !settingsPanel.hidden) positionSettingsPanel();
+    syncSettingsRadios();
   }
 
   settingsBtn.addEventListener('click', () => {
     toggleSettingsPanel();
   });
+
+  // --- drag handle: freeform placement + corner snap -----------------------------
+  //
+  // Mousedown on the handle switches the toolbar from wherever it's pinned (a
+  // named corner, or an earlier free-form spot) into live left/top tracking under
+  // the cursor. The snap decision - whether releasing lands back on one of the 4
+  // named corners, magnetically, or stays exactly where it was dropped - is made
+  // ONLY at mouseup, not live during the drag: snapping mid-drag would make the
+  // toolbar visibly jump out from under the cursor while the user is still moving
+  // it, which reads as broken rather than assistive.
+  //
+  // A drag itself is mousedown/mousemove/mouseup, never a `click`, so none of
+  // this is recordable by Playwright's recorder - which is exactly why the final
+  // position has to be forwarded to Node explicitly (via send(), the same
+  // out-of-band channel F's scope/field picks already use) instead of riding a
+  // marker the way the Settings radios do.
+  const SNAP_THRESHOLD_PX = 48;
+  let dragOffset = null;
+
+  function nearestCorner(rect) {
+    const distances = {
+      'top-left': Math.hypot(rect.left, rect.top),
+      'top-right': Math.hypot(window.innerWidth - rect.right, rect.top),
+      'bottom-left': Math.hypot(rect.left, window.innerHeight - rect.bottom),
+      'bottom-right': Math.hypot(window.innerWidth - rect.right, window.innerHeight - rect.bottom),
+    };
+    let best = null;
+    for (const corner of Object.keys(distances)) {
+      if (!best || distances[corner] < distances[best]) best = corner;
+    }
+    return distances[best] <= SNAP_THRESHOLD_PX ? best : null;
+  }
+
+  function onDragStart(e) {
+    e.preventDefault();
+    const rect = host.getBoundingClientRect();
+    dragOffset = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    // Avoid repositioning the Settings panel on every pixel of the drag - simpler
+    // and cheaper than keeping it glued to a button that is itself in motion.
+    closeSettingsPanel();
+    // Start free-tracking from exactly the toolbar's current on-screen spot, so
+    // switching a corner-pinned toolbar into drag mode never visibly jumps.
+    applyFreePosition(rect.left, rect.top);
+    row.classList.add('is-dragging');
+    window.addEventListener('mousemove', onDragMove);
+    window.addEventListener('mouseup', onDragEnd);
+  }
+
+  function onDragMove(e) {
+    if (!dragOffset) return;
+    applyFreePosition(e.clientX - dragOffset.x, e.clientY - dragOffset.y);
+  }
+
+  function onDragEnd() {
+    if (!dragOffset) return;
+    dragOffset = null;
+    row.classList.remove('is-dragging');
+    window.removeEventListener('mousemove', onDragMove);
+    window.removeEventListener('mouseup', onDragEnd);
+
+    const rect = host.getBoundingClientRect();
+    const snapTo = nearestCorner(rect);
+    if (snapTo) {
+      applyPosition(snapTo);
+      send({ type: 'ui', kind: 'position', mode: 'corner', corner: snapTo });
+    } else {
+      // Fractions of the CURRENT viewport, not raw px - a navigation can load
+      // into a differently-sized viewport, and restore() converts these back to
+      // px against whatever size the new page actually has.
+      send({
+        type: 'ui', kind: 'position', mode: 'free',
+        leftFrac: positionState.left / window.innerWidth,
+        topFrac: positionState.top / window.innerHeight,
+      });
+    }
+  }
+
+  dragHandle.addEventListener('mousedown', onDragStart);
+
+  // Always-on (unlike the settings-panel listener above, this isn't gated to
+  // "while something is open"): after a resize, pull a free-form-placed toolbar
+  // back fully on screen if the window shrank out from under it. Corner
+  // placements need no equivalent - their CSS (top/right/bottom/left: 12px) is
+  // inherently resize-safe.
+  window.addEventListener('resize', () => {
+    if (positionState.mode === 'free') applyFreePosition(positionState.left, positionState.top);
+  }, { passive: true });
 
   // --- mount ------------------------------------------------------------------
 
@@ -1303,6 +1508,23 @@ function installOverlay(config, html, css) {
         fState = 'bodyDetached';
         say('Still inside the per-item block.\nSteps here apply to the page (not to one item).\nPress F when done.', null);
       }
+      // Position/orientation, like rOpen/fOpen above, are logically still set on
+      // the Node side even though the DOM (and any drag in progress) was wiped by
+      // the navigation - re-apply through the same applyPosition()/
+      // applyFreePosition()/applyOrientation() a live drag or Settings click would
+      // use, so this is never a second, divergent code path for "place the
+      // toolbar." leftFrac/topFrac are fractions of whatever viewport size the
+      // PREVIOUS page had; converting back through the new page's own
+      // innerWidth/innerHeight is what makes a free-form position still land
+      // somewhere sensible after navigating into a differently-sized viewport.
+      if (state.position) {
+        if (state.position.mode === 'free' && typeof state.position.leftFrac === 'number') {
+          applyFreePosition(state.position.leftFrac * window.innerWidth, state.position.topFrac * window.innerHeight);
+        } else if (state.position.corner) {
+          applyPosition(state.position.corner);
+        }
+      }
+      if (state.orientation) applyOrientation(state.orientation);
       updateOpenStrip();
       // fItem does not survive a navigation even when fOpen does (see above) - fields
       // stay hidden in bodyDetached the same as any other non-'body' state.

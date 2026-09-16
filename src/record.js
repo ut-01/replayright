@@ -203,10 +203,22 @@ async function recordSession({ siteId, url, drive, headless, viewport, clearTrac
   const actionLog = [];
   const overlayEvents = [];
   const pending = [];
-  const markerState = { rOpen: false, fOpen: false };
+  const markerState = { rOpen: false, fOpen: false, position: null, orientation: null };
 
   await context.exposeBinding('__pwEvent', (_source, payload) => {
-    if (payload && typeof payload === 'object') overlayEvents.push(payload);
+    if (!payload || typeof payload !== 'object') return;
+    // Free-drag placement isn't a recorded click (no marker action for onAction
+    // below to parse), so overlay.js forwards it out-of-band on this same
+    // channel F's scope/field picks already use - intercepted here rather than
+    // pushed into overlayEvents, since it isn't a flow step, just UI state to
+    // remember across navigations (see the domcontentloaded restore() call below).
+    if (payload.type === 'ui' && payload.kind === 'position') {
+      markerState.position = payload.mode === 'free'
+        ? { mode: 'free', leftFrac: payload.leftFrac, topFrac: payload.topFrac }
+        : { mode: 'corner', corner: payload.corner };
+      return;
+    }
+    overlayEvents.push(payload);
   });
 
   await context.addInitScript({ content: buildOverlayScript({ markerPrefix: MARKER_PREFIX }) });
@@ -221,7 +233,12 @@ async function recordSession({ siteId, url, drive, headless, viewport, clearTrac
     // The init script re-runs on every navigation, but the overlay cannot know that a
     // block is still logically open - only Node knows that. Re-announce it.
     page.on('domcontentloaded', () => {
-      if (!markerState.rOpen && !markerState.fOpen) return;
+      // Position/orientation now persist across navigation too (see the `ui`
+      // marker handling and the __pwEvent interception above), so the old gate -
+      // skip restore() entirely unless R or F is open - would silently drop a
+      // dragged/repositioned toolbar back to its CSS defaults on every nav. Only
+      // truly skip when there is nothing at all to restore.
+      if (!markerState.rOpen && !markerState.fOpen && !markerState.position && !markerState.orientation) return;
       page.evaluate((state) => window.__playright?.restore(state), { ...markerState }).catch(() => {});
     });
   };
@@ -257,6 +274,16 @@ async function recordSession({ siteId, url, drive, headless, viewport, clearTrac
       if (marker?.kind === 'F') {
         if (marker.phase === 'arm') markerState.fOpen = true;
         if (marker.phase === 'close') markerState.fOpen = false;
+      }
+      // Settings-panel radio clicks are real recorded actions, so - unlike the
+      // drag handle's free-form drop, which never fires a `click` and instead
+      // arrives via the __pwEvent interception above - their new value is learned
+      // straight from the marker on the click itself.
+      if (marker?.kind === 'ui' && marker.phase === 'position' && marker.label) {
+        markerState.position = { mode: 'corner', corner: marker.label };
+      }
+      if (marker?.kind === 'ui' && marker.phase === 'orientation' && marker.label) {
+        markerState.orientation = marker.label;
       }
       return; // no point enriching our own buttons
     }

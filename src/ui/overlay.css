@@ -29,15 +29,23 @@
   normal document.
 */
 :host {
-  --pr-bg: #ffffff;
-  --pr-fg: #000000;
-  --pr-muted: rgba(0, 0, 0, .55);
+  /* Chrome tokens, shared with the light-DOM picker/settings panels via the
+     chromeVar() bridge in overlay.js (the same getComputedStyle(host) trick
+     zTier() already uses for --pr-z-*) - one dark design language instead of
+     two copies of the same values drifting independently. The toolbar is
+     permanently dark now (no more prefers-color-scheme light variant) so it
+     reads as the same system as those panels rather than a bolted-on light
+     cluster next to them. */
+  --pr-chrome-bg: rgba(17, 17, 17, .96);
+  --pr-chrome-fg: #ffffff;
+  --pr-chrome-muted: rgba(255, 255, 255, .6);
+  --pr-chrome-radius: 8px;
+  --pr-chrome-shadow: 0 4px 16px rgba(0, 0, 0, .35);
+
   --pr-accent-r: #ff3366;
   --pr-accent-r-tint: rgba(255, 51, 102, .12);
   --pr-accent-f: #007aff;
   --pr-accent-f-tint: rgba(0, 122, 255, .12);
-  --pr-radius: 4px;
-  --pr-shadow: 0 2px 8px rgba(0, 0, 0, .1);
 
   /* Stacking tiers shared by every layer this overlay mounts (see overlay.js's
      data-playright-chrome layers - the picker reads --pr-z-picker off this element
@@ -59,21 +67,8 @@
   align-items: flex-end;
   gap: 6px;
   font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  color: var(--pr-fg);
+  color: var(--pr-chrome-fg);
 }
-
-@media (prefers-color-scheme: dark) {
-  :host {
-    --pr-bg: #1a1a1a;
-    --pr-fg: #ffffff;
-    --pr-muted: rgba(255, 255, 255, .55);
-    --pr-shadow: 0 2px 8px rgba(0, 0, 0, .5);
-  }
-}
-
-/* --pr-accent-r / --pr-accent-f are fixed brand colours and deliberately do NOT
-   change between the two blocks above - R and F keep their identity in both
-   schemes. */
 
 /* Persistent "R open · F open" strip - answers "what's still open" without
    opening flow.json. Sits above the button row (see overlay.html's element
@@ -84,7 +79,7 @@
   font-weight: 600;
   letter-spacing: .04em;
   text-transform: uppercase;
-  color: var(--pr-muted);
+  color: var(--pr-chrome-muted);
   padding-right: 2px;
 }
 
@@ -92,6 +87,10 @@
   display: none;
 }
 
+/* The card that turns three separately-floating circles into one coherent
+   piece of chrome - same background/radius/shadow language as the picker's
+   level panel and the settings panel, so the toolbar reads as part of the
+   same system instead of a bolted-on cluster next to them. */
 .pr-row {
   display: flex;
   /* Follow the host's own row/column choice (set inline by overlay.js's
@@ -99,7 +98,64 @@
      isn't an inherited CSS property by default, so this needs the explicit
      `inherit` to pick up the host's value. */
   flex-direction: inherit;
-  gap: 8px;
+  align-items: center;
+  gap: 6px;
+  padding: 5px;
+  background: var(--pr-chrome-bg);
+  border-radius: var(--pr-chrome-radius);
+  box-shadow: var(--pr-chrome-shadow);
+  transition: box-shadow 120ms ease, opacity 120ms ease;
+}
+
+/* Drag feedback (overlay.js toggles this on mousedown/mouseup of the drag
+   handle) - a visible cue that the whole card is moving, not just the handle
+   itself. */
+.pr-row.is-dragging {
+  cursor: grabbing;
+  opacity: .85;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .45);
+}
+
+.pr-drag-handle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 33px;
+  flex: none;
+  /* Reset the <button> defaults (border/background/padding/font) - this has to
+     be a real button, not a div, for its aria-label to become an accessible
+     name at all (see the header comment in overlay.html for why). */
+  border: none;
+  background: transparent;
+  padding: 0;
+  border-radius: 4px;
+  color: var(--pr-chrome-muted);
+  font-size: 13px;
+  line-height: 1;
+  cursor: grab;
+  user-select: none;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.pr-drag-handle:focus-visible {
+  outline: 2px solid var(--pr-accent-f);
+  outline-offset: 1px;
+}
+
+/* Vertical layout (the default) stacks R/F/gear in a column, so the grip
+   glyph should lie on its side to still read as "drag" along the row it
+   actually moves in. overlay.js's applyOrientation() sets data-orientation
+   on the host alongside flex-direction, giving CSS a stable hook instead of
+   string-matching the style attribute. */
+:host([data-orientation="horizontal"]) .pr-drag-handle {
+  width: 33px;
+  height: 16px;
+}
+
+.pr-drag-handle:hover {
+  background: rgba(255, 255, 255, .1);
+  color: var(--pr-chrome-fg);
 }
 
 .pr-btn {
@@ -109,8 +165,8 @@
   height: 33px;
   border-radius: 50%;
   border: 2px solid var(--pr-accent);
-  background: var(--pr-bg);
-  color: var(--pr-fg);
+  background: transparent;
+  color: var(--pr-chrome-fg);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -118,7 +174,6 @@
   gap: 1px;
   padding: 0;
   cursor: pointer;
-  box-shadow: var(--pr-shadow);
   transition: background-color 120ms ease, color 120ms ease,
     transform 120ms ease, box-shadow 120ms ease;
 }
@@ -146,19 +201,14 @@
 }
 
 .pr-btn:hover {
-  /* A slight shade shift over the solid button background, not a swap to a
-     translucent tint - mixing onto --pr-bg keeps it opaque instead of letting
-     the page behind show through. */
-  background: color-mix(in srgb, var(--pr-bg) 88%, var(--pr-accent) 12%);
+  background: rgba(255, 255, 255, .1);
   transform: translateY(-1px);
-  box-shadow: 0 4px 10px rgba(0, 0, 0, .16);
 }
 
 .pr-btn:active {
   transform: translateY(0);
   background: var(--pr-accent);
   color: #fff;
-  box-shadow: var(--pr-shadow);
 }
 
 .pr-btn:focus-visible {
@@ -198,19 +248,18 @@
 
 .pr-pill {
   border: 1px solid var(--pr-accent-f);
-  background: var(--pr-bg);
+  background: transparent;
   color: var(--pr-accent-f);
   border-radius: 999px;
   padding: 4px 10px;
   font: 11px/1.3 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-weight: 600;
   cursor: pointer;
-  box-shadow: var(--pr-shadow);
   transition: background-color 120ms ease, color 120ms ease, transform 120ms ease;
 }
 
 .pr-pill:hover {
-  background: color-mix(in srgb, var(--pr-bg) 88%, var(--pr-accent-f) 12%);
+  background: rgba(0, 122, 255, .16);
   transform: translateY(-1px);
 }
 
@@ -247,10 +296,10 @@
 
 .pr-field-input {
   width: 100px;
-  border: 1px solid var(--pr-muted);
+  border: 1px solid var(--pr-chrome-muted);
   border-radius: 4px;
-  background: var(--pr-bg);
-  color: var(--pr-fg);
+  background: rgba(255, 255, 255, .06);
+  color: var(--pr-chrome-fg);
   font: 11px/1.3 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   padding: 4px 6px;
 }

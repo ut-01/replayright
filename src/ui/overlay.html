@@ -22,9 +22,28 @@
   Phase 3 without touching this structure. The R/F letter captions stay: they're
   what the docs, the CLI hints and muscle memory all refer to, so icon-only would
   cost more than it gains.
+
+  The drag handle carries a `playright:ui:drag-handle` marker even though the drag
+  gesture itself (mousedown/mousemove/mouseup, wired in overlay.js) never fires a
+  Playwright-recordable `click` - the marker is defense-in-depth for a zero-movement
+  press-release, which Playwright's recorder WOULD see as an ordinary click on an
+  accessible element. Without the prefix that stray click would leak into flow.json,
+  same failure class the stray-click guard in overlay.js exists to prevent elsewhere.
+
+  It MUST be a real `<button>`, not a `<div>`, for that marker to actually work: a
+  plain `<div>` has no implicit ARIA role, and `aria-label` on a role-less/generic
+  element is not exposed as its accessible name at all - confirmed against a real
+  recording, where Playwright's generator fell back to a text-based selector
+  (`internal:text="..."`) instead of a role locator carrying the marker, and the
+  click leaked into flow.json as two ordinary steps. A `<button>` (implicit
+  role=button, same as every other marker-carrying element here) is what makes
+  aria-label become the accessible name Playwright's role locator reads.
 -->
 <div class="pr-open-strip" data-pr="open-strip" hidden></div>
 <div class="pr-row" data-pr="row">
+  <button type="button" class="pr-drag-handle" data-pr="drag-handle" aria-label="playright:ui:drag-handle" title="Drag to move">
+    <span aria-hidden="true">&#8942;&#8942;</span>
+  </button>
   <button type="button" class="pr-btn pr-btn--r" data-pr="r-btn">
     <span class="pr-btn-icon" aria-hidden="true">&#10227;</span>
     <span class="pr-btn-label">R</span>
