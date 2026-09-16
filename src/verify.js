@@ -122,6 +122,8 @@ async function verifyFlow(flow, options = {}) {
     outputPath: options.outputPath,
     outputFormat: options.outputFormat,
     chunkBytesLimit: options.chunkBytesLimit,
+    // Also pass-through only - see runFlow's own comment on onAssert.
+    onAssert: options.onAssert,
   });
 
   printReport({ shapeProblems, advisories, stats });

@@ -168,3 +168,87 @@ test('fallback selectors captured during recording are carried into the flow', (
     'div > a:nth-of-type(2)',
   ]);
 });
+
+// --- the "A" sigil: assert:pick marker <-> out-of-band 'assert' event pairing --------
+
+const assertEvent = (overrides = {}) => ({
+  type: 'assert', checkType: 'count', op: 'gte', count: 1, selectors: ['.banner'],
+  tag: 'div', text: null, ...overrides,
+});
+
+test('an assert:pick marker pairs with the next out-of-band assert event, in order', () => {
+  const { flow, warnings } = buildFlow({
+    siteId: 's',
+    url: 'u',
+    actionLog: log(marker('assert:pick'), marker('assert:pick')),
+    overlayEvents: [
+      assertEvent({ checkType: 'count', op: 'eq', count: 0, selectors: ['.banner'] }),
+      assertEvent({ checkType: 'text-equals', value: 'Open roles', selectors: ['h1'] }),
+    ],
+  });
+
+  assert.deepStrictEqual(warnings, []);
+  assert.strictEqual(flow.steps.length, 2);
+  assert.deepStrictEqual(flow.steps[0], {
+    kind: 'assert', scope: 'page', selectors: ['.banner'], check: { type: 'count', op: 'eq', count: 0 },
+  });
+  assert.deepStrictEqual(flow.steps[1], {
+    kind: 'assert', scope: 'page', selectors: ['h1'], check: { type: 'text-equals', value: 'Open roles' },
+  });
+});
+
+test('a url-check assert event needs no selectors at all', () => {
+  const { flow, warnings } = buildFlow({
+    siteId: 's',
+    url: 'u',
+    actionLog: log(marker('assert:pick')),
+    overlayEvents: [assertEvent({ checkType: 'url', op: 'contains', value: 'https://example.test/thanks', selectors: [] })],
+  });
+
+  assert.deepStrictEqual(warnings, []);
+  assert.deepStrictEqual(flow.steps[0], {
+    kind: 'assert', scope: 'page', check: { type: 'url', op: 'contains', value: 'https://example.test/thanks' },
+  });
+  assert.ok(!('selectors' in flow.steps[0]));
+});
+
+test('an assert:pick marker with no captured payload is skipped with a warning', () => {
+  const { flow, warnings } = buildFlow({
+    siteId: 's',
+    url: 'u',
+    actionLog: log(marker('assert:pick')),
+    overlayEvents: [],
+  });
+
+  assert.strictEqual(flow.steps.length, 0);
+  assert.strictEqual(warnings.length, 1);
+  assert.strictEqual(warnings[0].type, 'assert-without-pick');
+});
+
+test('a non-url assert event with no addressable selector is skipped with a warning', () => {
+  const { flow, warnings } = buildFlow({
+    siteId: 's',
+    url: 'u',
+    actionLog: log(marker('assert:pick')),
+    overlayEvents: [assertEvent({ selectors: [] })],
+  });
+
+  assert.strictEqual(flow.steps.length, 0);
+  assert.strictEqual(warnings.length, 1);
+  assert.strictEqual(warnings[0].type, 'assert-unaddressable');
+});
+
+test('an assert:pick marker nests as a page-scoped step inside whatever block is open', () => {
+  const { flow } = buildFlow({
+    siteId: 's',
+    url: 'u',
+    actionLog: log(marker('R:start'), marker('assert:pick'), marker('R:end')),
+    overlayEvents: [assertEvent()],
+  });
+
+  assert.strictEqual(flow.steps.length, 1);
+  assert.strictEqual(flow.steps[0].kind, 'repeat');
+  assert.strictEqual(flow.steps[0].body.length, 1);
+  assert.strictEqual(flow.steps[0].body[0].kind, 'assert');
+  assert.strictEqual(flow.steps[0].body[0].scope, 'page');
+});

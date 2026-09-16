@@ -300,6 +300,7 @@ async function verify(options = {}) {
     const result = await verifyFlow(flow, {
       headless: verifyHeadless,
       artifactsDir: paths.failures,
+      onAssert: options.onAssert,
       ...runFlowOptionsFrom(configWithFlow),
     });
 
@@ -351,7 +352,7 @@ async function play(options = {}) {
   // this site was auto-detected (or requiresHeaded'd, at record/verify time) as needing
   // headed mode - see src/headless-probe.js.
   const { stats, fingerprint } = await withPage(options.headless ?? !flow.requiresHeaded, async (page) => {
-    const runStats = await runFlow(flow, { page, artifactsDir: paths.failures, ...runFlowOptionsFrom(configWithFlow) });
+    const runStats = await runFlow(flow, { page, artifactsDir: paths.failures, onAssert: options.onAssert, ...runFlowOptionsFrom(configWithFlow) });
     // Captured while the browser is still open and sitting on the final page.
     return { stats: runStats, fingerprint: await drift.captureFingerprint(page, flow, runStats) };
   }, { display: configWithFlow.display.mode, screen: configWithFlow.display.screen }, configWithFlow.browser.args);
@@ -368,9 +369,15 @@ async function play(options = {}) {
   // caller branching on the process's real exit code. Checked in the same priority
   // order: the first match wins when more than one condition applies at once.
   const structuralErrors = stats.errors.filter((e) => e.type === 'SELECTOR_UNRESOLVED').length;
+  // assertFailures was missing here until now - cli.js's cmdPlay already checked for it
+  // (EXIT_CODE.ASSERT_FAILED, src/constants.js), but this parallel derivation had fallen
+  // out of sync with it, so a library caller using play() directly saw exitCode: 0 on a
+  // run where an assert step failed. Same priority order as cli.js: first match wins.
+  const assertFailures = stats.errors.filter((e) => e.type === 'ASSERT_FAILED').length;
   let exitCode = EXIT_CODE.OK;
   if (driftStatus === 'BROKEN') exitCode = EXIT_CODE.DRIFT_BROKEN;
   else if (structuralErrors > 0) exitCode = EXIT_CODE.SELECTOR_UNRESOLVED;
+  else if (assertFailures > 0) exitCode = EXIT_CODE.ASSERT_FAILED;
   else if (stats.aborted) exitCode = EXIT_CODE.ABORTED;
   else if (stats.actions === 0) exitCode = EXIT_CODE.ZERO_ACTIONS;
   const ok = exitCode === EXIT_CODE.OK;
@@ -397,6 +404,7 @@ async function play(options = {}) {
     driftIssues,
     fingerprintSaved,
     structuralErrors,
+    assertFailures,
     outputPath,
     runRecordPath,
   };

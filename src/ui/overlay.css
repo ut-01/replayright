@@ -46,6 +46,8 @@
   --pr-accent-r-tint: rgba(255, 51, 102, .12);
   --pr-accent-f: #007aff;
   --pr-accent-f-tint: rgba(0, 122, 255, .12);
+  --pr-accent-a: #34c759;
+  --pr-accent-a-tint: rgba(52, 199, 89, .12);
 
   /* Stacking tiers shared by every layer this overlay mounts (see overlay.js's
      data-playright-chrome layers - the picker reads --pr-z-picker off this element
@@ -188,6 +190,11 @@
   --pr-accent-tint: var(--pr-accent-f-tint);
 }
 
+.pr-btn--a {
+  --pr-accent: var(--pr-accent-a);
+  --pr-accent-tint: var(--pr-accent-a-tint);
+}
+
 .pr-btn-icon {
   font-size: 15px;
   line-height: 1;
@@ -307,6 +314,83 @@
 .pr-field-input:focus-visible {
   outline: 2px solid var(--pr-accent-f);
   outline-offset: 1px;
+}
+
+/* Assert panel (the "A" sigil). Same "[hidden] -> display:none, idle toolbar paints
+   nothing extra" reasoning as .pr-fields above; shown/hidden by the A button rather
+   than by fState, since a page-scoped assert is not tied to an open F body. */
+.pr-assert {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: stretch;
+  max-width: 180px;
+  /* Unlike the button row, this panel is not itself `.pr-row` - it is a sibling
+     floated directly on the transparent `:host`, so without its own card background
+     it painted nothing behind the dropdown/inputs/pills but the recorded page
+     showing through. Against a light page that left the ~6%-white-tint inputs and
+     the outline-only `.pr-pill` buttons all but invisible. Same card language as
+     `.pr-row` so it reads as part of the same toolbar instead of floating loose. */
+  padding: 6px;
+  background: var(--pr-chrome-bg);
+  border-radius: var(--pr-chrome-radius);
+  box-shadow: var(--pr-chrome-shadow);
+}
+
+.pr-assert[hidden] {
+  display: none;
+}
+
+.pr-assert-select {
+  border: 1px solid var(--pr-accent-a);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, .06);
+  color: var(--pr-chrome-fg);
+  font: 11px/1.3 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  padding: 4px 6px;
+}
+
+.pr-assert-attr,
+.pr-assert-value {
+  border: 1px solid var(--pr-chrome-muted);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, .06);
+  color: var(--pr-chrome-fg);
+  font: 11px/1.3 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  padding: 4px 6px;
+}
+
+.pr-assert-attr[hidden],
+.pr-assert-value[hidden] {
+  display: none;
+}
+
+.pr-assert-attr:focus-visible,
+.pr-assert-value:focus-visible {
+  outline: 2px solid var(--pr-accent-a);
+  outline-offset: 1px;
+}
+
+.pr-assert [data-pr="assert-pick-btn"],
+.pr-assert [data-pr="assert-capture-btn"] {
+  border-color: var(--pr-accent-a);
+  color: var(--pr-accent-a);
+}
+
+.pr-assert [data-pr="assert-pick-btn"]:hover,
+.pr-assert [data-pr="assert-capture-btn"]:hover {
+  background: var(--pr-accent-a-tint);
+}
+
+.pr-assert [data-pr="assert-pick-btn"]:active,
+.pr-assert [data-pr="assert-capture-btn"]:active {
+  background: var(--pr-accent-a);
+  color: #fff;
+}
+
+.pr-assert [data-pr="assert-pick-btn"][hidden],
+.pr-assert [data-pr="assert-capture-btn"][hidden] {
+  display: none;
 }
 
 /* Settings button styling (Phase 3.4) */

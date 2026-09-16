@@ -196,6 +196,27 @@ don't "simplify" them away):
 - `settle` (content under a selector must change) exists for SPAs that swap the list in
   place, where Playwright has nothing to auto-wait on.
 - Delays are applied only when a real page load happened, not around every click.
+- `runAssert` reports every outcome (pass and fail, not just fail) through two channels
+  kept deliberately separate from each other: the synchronous `options.onAssert(result)`
+  callback threaded through `runFlow`/`play()`/`verify()` for an in-process npm consumer,
+  and the `assert-passed`/`assert-failed` `EVENT`s in `src/log.js`'s existing `--log=json`
+  NDJSON stream for anything out-of-process (a CI step, an n8n Execute Command node).
+  Both fire from inside `runAssert`'s own try/catch, before a failing assert's error is
+  thrown — deliberately not routed through `handleError`'s generic `step-failed` path,
+  which only runs for a step nested under a `repeat`/`foreach` body.
+
+### The recording overlay's third sigil: `A` (assert)
+
+`src/ui/overlay.js`'s assert button follows the exact same one-shot arm → pick → capture
+shape the "+ Field" mechanism (Phase 3.2) already uses — chosen deliberately over
+inventing a new correlation mechanism: a dropdown picks the check type first (the
+`aria-label`/marker only gets its final value once the type is chosen, same reason
+field's confirm button sets its marker on `input`, not inside its own `click` handler),
+then arming a picker sends the pick payload out-of-band over `__pwEvent`, and `ir.js`
+pairs marker-click with payload FIFO-style (same queue field's `splitFieldEvents` uses)
+into `{ kind: 'assert', check: {...} }` instead of `{ kind: 'extract' }`. "Found" / "not
+found" / "multiple found" in the dropdown are UI sugar over `count` `gte 1` / `eq 0` /
+`gt 1` — there is no separate check type for them in `flow.json` or `interpret.js`.
 
 ### Trust gates: `src/verify.js` and `src/drift.js`
 

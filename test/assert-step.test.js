@@ -35,12 +35,12 @@ function repeatOf(...body) {
   return { kind: 'repeat', times: 1, body };
 }
 
-async function runOne(step) {
+async function runOne(step, extraOptions = {}) {
   return withPage((page) => runFlow({
     siteId: 'fixture-assert',
     startUrl: fixture('paged', 'page1.html'),
     steps: [repeatOf(step)],
-  }, { page, ...FAST }));
+  }, { page, ...FAST, ...extraOptions }));
 }
 
 test('a passing text-equals assertion does not fail the run and counts as an action', async () => {
@@ -134,4 +134,39 @@ test('an item-scoped assert outside any foreach throws a malformed-flow error', 
   // an item-scoped action outside a foreach.
   assert.strictEqual(stats.errors.length, 1);
   assert.match(stats.errors[0].message, /not inside a foreach/);
+});
+
+// --- onAssert hook (in-process consumers) --------------------------------------
+
+test('onAssert fires for a passing assert, synchronously, with passed: true', async () => {
+  const seen = [];
+  await runOne(
+    { kind: 'assert', scope: 'page', selectors: ['h1'], check: { type: 'text-equals', value: 'Open roles' } },
+    { onAssert: (result) => seen.push(result) },
+  );
+  assert.strictEqual(seen.length, 1);
+  assert.strictEqual(seen[0].passed, true);
+  assert.strictEqual(seen[0].checkType, 'text-equals');
+});
+
+test('onAssert fires for a failing assert too, before the run records ASSERT_FAILED', async () => {
+  const seen = [];
+  const stats = await runOne(
+    { kind: 'assert', scope: 'page', selectors: ['h1'], check: { type: 'text-equals', value: 'nope' } },
+    { onAssert: (result) => seen.push(result) },
+  );
+  assert.strictEqual(seen.length, 1);
+  assert.strictEqual(seen[0].passed, false);
+  assert.match(seen[0].message, /expected text to equal/);
+  // Same outcome reaches the stats.errors channel out-of-process consumers already read.
+  assert.strictEqual(stats.errors[0]?.type, 'ASSERT_FAILED');
+});
+
+test('a malformed-flow error (item scope outside a foreach) does not fire onAssert', async () => {
+  const seen = [];
+  await runOne(
+    { kind: 'assert', scope: 'item', relativeSelectors: [''], check: { type: 'count', count: 1 } },
+    { onAssert: (result) => seen.push(result) },
+  );
+  assert.strictEqual(seen.length, 0);
 });

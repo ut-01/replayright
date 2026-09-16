@@ -13,6 +13,7 @@ const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 
 const { record, verify, play, list, loadFlow } = require('../index');
+const { EXIT_CODE } = require('../src/constants');
 
 const SITE_ID = '_test_index_api';
 const fixture = (...p) => pathToFileURL(path.join(__dirname, 'fixtures', ...p)).href;
@@ -121,6 +122,46 @@ test('play() runs a previously-recorded flow and returns stats', async () => {
 
   assert.ok(fs.existsSync(path.join(sitesDir, SITE_ID, 'fingerprint.json')),
     'play() (unlike verify()) should have advanced the drift fingerprint');
+});
+
+test('play() exits with EXIT_CODE.ASSERT_FAILED and fires onAssert, not just exitCode: 0', async () => {
+  // Regression test: play()'s own exitCode derivation had fallen out of sync with
+  // cli.js's cmdPlay - it checked SELECTOR_UNRESOLVED but never ASSERT_FAILED, so a
+  // library caller saw exitCode: 0 (and ok: true) on a run where an assert step
+  // actually failed. Self-contained flow.json, independent of the record()/play() flow
+  // above - this only needs a failing assert.
+  const assertSitesDir = tmpDir('replayright-index-api-assert-');
+  const siteId = '_test_index_api_assert_failed';
+  const siteDir = path.join(assertSitesDir, siteId);
+  fs.mkdirSync(siteDir, { recursive: true });
+
+  const flow = {
+    siteId,
+    startUrl: fixture('paged', 'page1.html'),
+    verified: true,
+    requiresHeaded: false,
+    steps: [
+      {
+        kind: 'repeat',
+        times: 1,
+        body: [
+          { kind: 'assert', scope: 'page', selectors: ['h1'], check: { type: 'text-equals', value: 'Not the actual heading' } },
+        ],
+      },
+    ],
+  };
+  fs.writeFileSync(path.join(siteDir, 'flow.json'), JSON.stringify(flow, null, 2));
+
+  const seen = [];
+  const result = await play({ siteId, sitesDir: assertSitesDir, headless: true, onAssert: (r) => seen.push(r) });
+
+  assert.strictEqual(result.exitCode, EXIT_CODE.ASSERT_FAILED, 'library caller should see the same exit code the CLI does');
+  assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.assertFailures, 1);
+  assert.strictEqual(seen.length, 1);
+  assert.strictEqual(seen[0].passed, false);
+
+  fs.rmSync(assertSitesDir, { recursive: true, force: true });
 });
 
 test('list() returns an array reflecting what is actually in the sites directory', async () => {

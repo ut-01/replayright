@@ -52,10 +52,49 @@
     <span class="pr-btn-icon" aria-hidden="true">&#9638;</span>
     <span class="pr-btn-label">F</span>
   </button>
+  <button type="button" class="pr-btn pr-btn--a" data-pr="a-btn">
+    <span class="pr-btn-icon" aria-hidden="true">&#10003;</span>
+    <span class="pr-btn-label">A</span>
+  </button>
   <button type="button" class="pr-btn pr-btn--settings" data-pr="settings-btn">
     <span class="pr-btn-icon" aria-hidden="true">&#9881;</span>
     <span class="pr-btn-label">⚙</span>
   </button>
+</div>
+
+<!--
+  Assert panel (the third sigil, "A"). Unlike R/F, an assert has no open/close pairing
+  and no out-of-band scope/item split to reconstruct - it resolves to one outcome in one
+  instant, the same shape "+ Field" (below) already uses for a field pick. That is why
+  this reuses the exact same mechanism rather than inventing a new one: pick the check
+  TYPE first (the dropdown), fill in whatever value that type needs, then either click
+  "Pick target" (arms the picker for anything that checks an element) or "Capture" (for
+  a URL check, which has no element to pick - it reads the current page's own URL
+  immediately on click, out-of-band, the same instant the marker fires).
+  "Pick target" and "Capture" both carry a FIXED marker (`playright:assert:pick`, set
+  once below, never mutated) - unlike the field confirm button's per-click dynamic
+  label, an assert's check type/value travels entirely through the out-of-band
+  `__pwEvent` payload (ir.js's queue-position pairing, same as field), so the marker
+  itself never needs to encode anything beyond "a pick happened here".
+
+  Hidden by default; overlay.js toggles it on the A button's click, independent of
+  R/F/fState - a page-scoped assert is not tied to being inside an open F body.
+-->
+<div class="pr-assert" data-pr="assert" hidden>
+  <select class="pr-assert-select" data-pr="assert-type">
+    <option value="exists">Element exists</option>
+    <option value="not-exists">Element not found</option>
+    <option value="multiple">Multiple elements found</option>
+    <option value="text-equals">Text equals…</option>
+    <option value="text-contains">Text contains…</option>
+    <option value="attribute">Attribute equals…</option>
+    <option value="url-contains">URL contains…</option>
+    <option value="url-equals">URL equals…</option>
+  </select>
+  <input type="text" class="pr-assert-attr" data-pr="assert-attr" placeholder="Attribute name" hidden autocomplete="off" />
+  <input type="text" class="pr-assert-value" data-pr="assert-value" placeholder="Expected value" hidden autocomplete="off" />
+  <button type="button" class="pr-pill" data-pr="assert-pick-btn" aria-label="playright:assert:pick" disabled>Pick target</button>
+  <button type="button" class="pr-pill" data-pr="assert-capture-btn" aria-label="playright:assert:pick" hidden>Capture</button>
 </div>
 
 <!--

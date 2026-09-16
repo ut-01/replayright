@@ -262,14 +262,35 @@ failed, separate from `11` (an action's own selector vanished - the site changed
 (drift). This is the way to tell "the site rendered fine but the data looks wrong" apart
 from "the site changed" in a scheduled job.
 
-`assert` steps are hand-authored only - there is no recorder support (no overlay button,
-no marker) for them yet, so add them to `flow.json` directly after recording, the same way
-a `fill` step's secret placeholder is hand-edited in. A `count` check is intentionally
-limited to a single selector rather than a ranked/fallback list, because "0 matches" is
-often the whole point of the check (e.g. asserting a banner is gone) - `candidates.resolve()`'s
-fallback logic treats a zero-match candidate as something to fall back past, which would
-be wrong here. `replayright validate` checks an `assert` step's shape the same way it
-checks the other four kinds.
+`assert` steps can be added at record time via the overlay's **A** button (pick a target,
+then choose the check from the dropdown - "found"/"not found"/"multiple found" are just
+friendlier names for `count` `gte 1`/`eq 0`/`gt 1`), or hand-authored directly into
+`flow.json` the same way a `fill` step's secret placeholder is hand-edited in - both
+produce the identical step shape. A `count` check is intentionally limited to a single
+selector rather than a ranked/fallback list, because "0 matches" is often the whole point
+of the check (e.g. asserting a banner is gone) - `candidates.resolve()`'s fallback logic
+treats a zero-match candidate as something to fall back past, which would be wrong here.
+`replayright validate` checks an `assert` step's shape the same way it checks the other
+four kinds.
+
+Every `assert` outcome (pass or fail) is reported through two channels, so "run custom
+code when an assert completes" never means embedding a sandboxed `eval` in the
+interpreter itself:
+
+- **In-process** (using `replayright` as an npm dependency): `runFlow()`/`play()`/
+  `verify()` all accept an `onAssert(result)` option
+  (`{ path, passed, checkType, scope, message }`), called synchronously at the moment
+  each assert resolves - a caller's own code runs directly, no indirection needed.
+- **Out-of-process** (a CLI wrapper, a CI step, an n8n workflow): run with `--log=json`
+  and read the `assert-passed` / `assert-failed` NDJSON lines `src/log.js` already emits
+  for every other step kind - the "custom code" then lives in whatever is consuming that
+  stream (an n8n Code node reacting to a parsed line), not inside replayright.
+
+`onAssert` fires **before** a failing assert's error is thrown, so it still reports the
+result even for a bare page-scoped `assert` with no enclosing `repeat`/`foreach` - a
+top-level step's error is otherwise uncaught in `interpret.js` today (any step kind, not
+just `assert`), so `play()`/`verify()` themselves reject in that shape; catch them the
+same way you would any other flow-crashing error.
 
 ### Secrets in `fill` steps
 

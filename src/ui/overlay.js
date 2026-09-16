@@ -88,6 +88,7 @@ function installOverlay(config, html, css) {
   const openStrip = shadow.querySelector('[data-pr="open-strip"]');
   const rBtn = shadow.querySelector('[data-pr="r-btn"]');
   const fBtn = shadow.querySelector('[data-pr="f-btn"]');
+  const aBtn = shadow.querySelector('[data-pr="a-btn"]');
   const settingsBtn = shadow.querySelector('[data-pr="settings-btn"]');
 
   // The aria-label IS the accessible name, which is what Playwright's own selector
@@ -99,6 +100,10 @@ function installOverlay(config, html, css) {
   // actually had.
   rBtn.setAttribute('aria-label', PREFIX + 'R:start');
   fBtn.setAttribute('aria-label', PREFIX + 'F:arm');
+  // kind 'ui', same bucket settingsBtn's own marker falls into (ir.js drops every
+  // `ui` marker regardless of phase) - toggling the assert panel open/closed is not
+  // itself a replayable step, unlike the pick-target/capture buttons inside it.
+  aBtn.setAttribute('aria-label', PREFIX + 'ui:assert-toggle');
   settingsBtn.setAttribute('aria-label', PREFIX + 'ui:settings');
 
   // `title` is plain human-readable hover copy - independent of aria-label, which
@@ -115,6 +120,7 @@ function installOverlay(config, html, css) {
   };
   rBtn.title = TITLE_R.closed;
   fBtn.title = TITLE_F.idle;
+  aBtn.title = 'Add an assertion (A)';
   settingsBtn.title = 'Settings (position and orientation)';
 
   function paint(btn, active) {
@@ -1121,6 +1127,149 @@ function installOverlay(config, html, css) {
     if (!label) return;
     fieldCustomWrap.hidden = true;
     armField(label);
+  });
+
+  // --- assert panel (the "A" sigil) ---------------------------------------------
+  //
+  // Resolves to one outcome in one instant, same as a field pick - no arm/close
+  // pairing, so ir.js needs only a single fixed marker (`playright:assert:pick`, set
+  // once in overlay.html, never mutated) to know "a pick happened here"; everything
+  // that pick actually checks travels out-of-band, same channel field uses.
+  //
+  // Independent of fState/rOpen on purpose: a page-scoped assert ("this banner is
+  // gone", "we're on the confirmation page") is not tied to being inside an open F
+  // body the way a field extraction is - it can be pressed any time the toolbar is
+  // idle, and it still nests inside whatever repeat/foreach happens to be open at the
+  // moment (ir.js just pushes it onto top().body), the same as any other page-scoped
+  // action recorded while a block is open.
+  const assertPanel = shadow.querySelector('[data-pr="assert"]');
+  const assertTypeSelect = shadow.querySelector('[data-pr="assert-type"]');
+  const assertAttrInput = shadow.querySelector('[data-pr="assert-attr"]');
+  const assertValueInput = shadow.querySelector('[data-pr="assert-value"]');
+  const assertPickBtn = shadow.querySelector('[data-pr="assert-pick-btn"]');
+  const assertCaptureBtn = shadow.querySelector('[data-pr="assert-capture-btn"]');
+
+  // Same reasoning as fieldInput's own marker: a real interaction with these (a
+  // `selectOption` on the dropdown, a `fill` on either text box) would otherwise be
+  // recorded with a marker-free generated selector and leak into flow.json as a
+  // stray step - kind 'ui' so ir.js drops it regardless of phase, same bucket the
+  // settings panel's own radios fall into.
+  assertTypeSelect.setAttribute('aria-label', PREFIX + 'ui:assert-type');
+  assertAttrInput.setAttribute('aria-label', PREFIX + 'ui:assert-attr');
+  assertValueInput.setAttribute('aria-label', PREFIX + 'ui:assert-value');
+
+  // Which of the two check-building fields (attribute name, expected value) this type
+  // actually needs, and whether it needs an element picked at all ("url-*" reads the
+  // current page's own URL instead - see updateAssertControls below).
+  const ASSERT_TYPE_INFO = {
+    exists: { needsValue: false, needsAttr: false, needsPick: true },
+    'not-exists': { needsValue: false, needsAttr: false, needsPick: true },
+    multiple: { needsValue: false, needsAttr: false, needsPick: true },
+    'text-equals': { needsValue: true, needsAttr: false, needsPick: true },
+    'text-contains': { needsValue: true, needsAttr: false, needsPick: true },
+    attribute: { needsValue: true, needsAttr: true, needsPick: true },
+    'url-contains': { needsValue: false, needsAttr: false, needsPick: false },
+    'url-equals': { needsValue: false, needsAttr: false, needsPick: false },
+  };
+
+  function assertReady() {
+    const info = ASSERT_TYPE_INFO[assertTypeSelect.value];
+    if (info.needsValue && !assertValueInput.value.trim()) return false;
+    if (info.needsAttr && !assertAttrInput.value.trim()) return false;
+    return true;
+  }
+
+  function updateAssertControls() {
+    const info = ASSERT_TYPE_INFO[assertTypeSelect.value];
+    assertAttrInput.hidden = !info.needsAttr;
+    assertValueInput.hidden = !info.needsValue;
+    assertPickBtn.hidden = !info.needsPick;
+    assertCaptureBtn.hidden = info.needsPick;
+    assertPickBtn.disabled = !assertReady();
+    assertCaptureBtn.disabled = !assertReady();
+  }
+
+  assertTypeSelect.addEventListener('change', updateAssertControls);
+  assertAttrInput.addEventListener('input', updateAssertControls);
+  assertValueInput.addEventListener('input', updateAssertControls);
+  updateAssertControls();
+
+  aBtn.addEventListener('click', () => {
+    assertPanel.hidden = !assertPanel.hidden;
+    paint(aBtn, !assertPanel.hidden);
+    if (!assertPanel.hidden) updateAssertControls();
+  });
+
+  // Built once here from the panel's current controls, then carried unchanged through
+  // either path below (arm-and-pick, or the immediate URL capture) - so the payload a
+  // later picker click sends is exactly what the dropdown said at the moment "Pick
+  // target"/"Capture" was pressed, not whatever the dropdown happens to show later.
+  function currentCheckPayload() {
+    const type = assertTypeSelect.value;
+    const value = assertValueInput.value.trim();
+    switch (type) {
+      case 'exists': return { checkType: 'count', op: 'gte', count: 1 };
+      case 'not-exists': return { checkType: 'count', op: 'eq', count: 0 };
+      case 'multiple': return { checkType: 'count', op: 'gt', count: 1 };
+      case 'text-equals': return { checkType: 'text-equals', value };
+      case 'text-contains': return { checkType: 'text-contains', value };
+      case 'attribute': return { checkType: 'attribute', attribute: assertAttrInput.value.trim(), value };
+      case 'url-contains': return { checkType: 'url', op: 'contains', value: location.href };
+      case 'url-equals': return { checkType: 'url', op: 'equals', value: location.href };
+      default: return null;
+    }
+  }
+
+  function resetAssertPanel() {
+    assertValueInput.value = '';
+    assertAttrInput.value = '';
+    updateAssertControls();
+  }
+
+  function onAssertPick(el) {
+    const parents = parentCandidates(el);
+    if (!parents.length) {
+      say('Could not build a stable selector for that.\nTry a slightly different element.', 'bad');
+      armAssertPick();
+      return;
+    }
+    const payload = currentCheckPayload();
+    send({ ...payload, type: 'assert', selectors: parents.map((p) => p.selector), tag: el.tagName.toLowerCase(), text: textOf(el) });
+    say('Captured assertion: ' + JSON.stringify(textOf(el) || '').slice(0, 80), 'good');
+    resetAssertPanel();
+  }
+
+  function armAssertPick() {
+    say('Assert: click the element to check.\n\nThis click will not affect the site.', null);
+    openPicker('Click the element to check', {
+      top: () => document.body,
+      preview: (raw) => raw,
+      suggest: () => 0,
+      needsHelp: () => false,
+      hiddenMatters: () => false,
+      describe: (el) => {
+        const parents = parentCandidates(el);
+        if (!parents.length) return { tone: 'bad', text: 'Not addressable. Try a different element.', canUse: false };
+        const text = textOf(el);
+        return { tone: 'good', text: (parents[0]?.selector || '(element)') + (text ? '  →  ' + JSON.stringify(text) : ''), canUse: true };
+      },
+      commit: (el) => onAssertPick(el),
+    });
+  }
+
+  assertPickBtn.addEventListener('click', () => {
+    if (!assertReady()) return;
+    armAssertPick();
+  });
+
+  // No picker for a URL check - the marker and the out-of-band payload both fire from
+  // this same click, immediately, since there is no element to pick.
+  assertCaptureBtn.addEventListener('click', () => {
+    if (!assertReady()) return;
+    const payload = currentCheckPayload();
+    send({ ...payload, type: 'assert' });
+    say('Captured assertion: URL ' + payload.op + ' ' + JSON.stringify(payload.value), 'good');
+    resetAssertPanel();
   });
 
   // --- settings panel (Phase 3.4) -----------------------------------------------

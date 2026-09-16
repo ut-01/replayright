@@ -48,6 +48,38 @@ function splitFieldEvents(events) {
     .map((event) => ({ key: event.key || null, rel: event.rel || [], tag: event.tag || null, text: event.text || null }));
 }
 
+// Assert picks (the "A" sigil) resolve to one outcome in one instant too, the same
+// shape a field pick does - so the same plain in-order queue works: each
+// `assert:pick` marker seen in the action stream claims the next entry here. Unlike a
+// field, the check TYPE/value already travelled in full on this same payload (see
+// overlay.js's currentCheckPayload) - the marker itself carries nothing beyond "a pick
+// happened here".
+function splitAssertEvents(events) {
+  return events
+    .filter((event) => event.type === 'assert')
+    .map((event) => ({
+      checkType: event.checkType,
+      op: event.op,
+      count: event.count,
+      value: event.value,
+      attribute: event.attribute,
+      selectors: event.selectors || [],
+      tag: event.tag || null,
+      text: event.text || null,
+    }));
+}
+
+// overlay.js's currentCheckPayload() -> flow.json's `check` shape (src/interpret.js's
+// runAssert). A `url` check carries no selectors at all (there is nothing to pick -
+// see overlay.js's assertCaptureBtn), so buildAssertStep below only attaches
+// `selectors` for every other check type.
+function buildAssertCheck(payload) {
+  if (payload.checkType === 'count') return { type: 'count', op: payload.op, count: payload.count };
+  if (payload.checkType === 'url') return { type: 'url', op: payload.op, value: payload.value };
+  if (payload.checkType === 'attribute') return { type: 'attribute', attribute: payload.attribute, value: payload.value };
+  return { type: payload.checkType, value: payload.value };
+}
+
 const norm = (s) => (s || '').toLowerCase().replace(/\s+/g, ' ').trim();
 
 // Does this overlay-observed event plausibly describe the same interaction as this
@@ -222,6 +254,8 @@ function buildFlow({ siteId, startUrl, actionLog, overlayEvents }) {
   let nextScopeBlock = 0;
   const fieldEvents = splitFieldEvents(overlayEvents);
   let nextFieldEvent = 0;
+  const assertEvents = splitAssertEvents(overlayEvents);
+  let nextAssertEvent = 0;
 
   const rootSteps = [];
   const stack = [{ kind: 'root', body: rootSteps }];
@@ -324,6 +358,35 @@ function buildFlow({ siteId, startUrl, actionLog, overlayEvents }) {
         // staleness. `marker.label` is kept as a fallback for a hand-built action log
         // whose field payload predates this field, i.e. has no `key` of its own.
         open.body.push({ kind: 'extract', key: payload.key || marker.label, relativeSelectors: payload.rel });
+        continue;
+      }
+
+      if (marker.kind === 'assert' && marker.phase === 'pick') {
+        const payload = assertEvents[nextAssertEvent];
+        if (!payload) {
+          warnings.push({
+            type: 'assert-without-pick',
+            message: 'an assert was armed but no target/value was captured; skipped',
+          });
+          continue;
+        }
+        nextAssertEvent += 1;
+        // A `url` check has nothing to pick (see splitAssertEvents/buildAssertCheck) -
+        // every other check type needs at least one selector candidate to be useful.
+        if (payload.checkType !== 'url' && !payload.selectors.length) {
+          warnings.push({
+            type: 'assert-unaddressable',
+            message: 'an assert target could not be given a stable selector; skipped',
+          });
+          continue;
+        }
+        // Page-scoped regardless of what block happens to be open (root/repeat/
+        // foreach) - the "A" button offers no item-scope pick today (see CLAUDE.md),
+        // so this always nests as a page-scoped step wherever it was pressed, the
+        // same way any other page-scoped action recorded mid-foreach already does.
+        const step = { kind: 'assert', scope: 'page', check: buildAssertCheck(payload) };
+        if (payload.checkType !== 'url') step.selectors = payload.selectors;
+        top().body.push(step);
         continue;
       }
 

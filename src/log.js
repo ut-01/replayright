@@ -48,6 +48,13 @@ function randomDelay(minMs = MIN_DELAY_MS, maxMs = MAX_DELAY_MS) {
 //   step-fallback                a candidate resolved on a non-primary selector
 //   step-warning                  a step produced a non-fatal warning
 //   step-failed                    a step failed outright
+//   assert-passed                    an 'assert' step's check held
+//   assert-failed                    an 'assert' step's check did not hold (also
+//                                     reported as a step-failed error entry in stats,
+//                                     since ASSERT_FAILED is still an error type - this
+//                                     tag exists so a consumer can react to assert
+//                                     outcomes specifically without pattern-matching
+//                                     step-failed messages)
 //   output-written                  CSV/JSON rows were written to --out
 //   drift-ok                        drift check passed
 //   drift-detected                   drift check came back WARNING or BROKEN
@@ -67,6 +74,8 @@ const EVENT = {
   STEP_FALLBACK: 'step-fallback',
   STEP_WARNING: 'step-warning',
   STEP_FAILED: 'step-failed',
+  ASSERT_PASSED: 'assert-passed',
+  ASSERT_FAILED: 'assert-failed',
   OUTPUT_WRITTEN: 'output-written',
   DRIFT_OK: 'drift-ok',
   DRIFT_DETECTED: 'drift-detected',

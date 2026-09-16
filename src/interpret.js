@@ -431,57 +431,94 @@ async function runAssert(step, ctx) {
   const actingPage = scopeName === 'detail' ? detailPage : ctx.page;
   const selectors = isItemScoped ? step.relativeSelectors : step.selectors;
 
-  if (check.type === 'url') {
-    const url = actingPage.url();
-    const ok = check.op === 'equals' ? url === check.value : url.includes(check.value);
-    if (!ok) {
-      throw new AssertionError(`${label}: expected URL ${check.op === 'equals' ? 'to equal' : 'to contain'} ${JSON.stringify(check.value)}, got ${JSON.stringify(url)}`);
-    }
-  } else if (check.type === 'count') {
-    // Deliberately NOT candidates.resolve() - a count check's whole point can be "expect
-    // 0 matches" (e.g. a banner is gone), and resolve() treats a zero-match candidate as
-    // a failure to fall back past rather than a valid answer. A count check therefore
-    // always reads a single selector, not a ranked/fallback list.
-    const selector = (selectors && selectors[0]) ?? '';
-    const locator = candidates.scopedLocator(scope, selector);
-    const actual = await locator.count();
-    if (!compareCount(actual, check.op, check.count)) {
-      throw new AssertionError(`${label}: expected count ${check.op || 'eq'} ${check.count} for ${JSON.stringify(selector)}, got ${actual}`);
-    }
-  } else if (check.type === 'text-equals' || check.type === 'text-contains' || check.type === 'attribute') {
-    let locator;
-    try {
-      ({ locator } = await candidates.resolve(scope, selectors, {
-        what: label,
-        onFallback: onFallbackFor(ctx),
-        waitMs: ctx.opts.resolveWaitMs,
-      }));
-    } catch (err) {
-      // Folded into ASSERT_FAILED rather than left as SELECTOR_UNRESOLVED - an assert's
-      // own target not resolving IS the assertion failing ("expect this to be there"),
-      // not a separate "an action's target vanished" signal.
-      throw new AssertionError(`${label}: target could not be resolved (${err.message.split('\n')[0]})`);
-    }
-    if (check.type === 'attribute') {
-      const actual = await locator.first().getAttribute(check.attribute);
-      if (actual !== check.value) {
-        throw new AssertionError(`${label}: expected attribute ${JSON.stringify(check.attribute)} to be ${JSON.stringify(check.value)}, got ${JSON.stringify(actual)}`);
+  // Wrapped so every failure - from any check.type branch below - reaches exactly one
+  // place that reports the outcome (ctx.opts.onAssert, the in-process hook a library
+  // caller passes into runFlow()/play()/verify(), and a dedicated ASSERT_PASSED/
+  // ASSERT_FAILED json-log line, the out-of-process channel any other consumer - a
+  // shell script, a CI step, an n8n Execute Command node tailing `--log=json` - reacts
+  // to instead of needing to embed JS). Both fire on a pass too, not just a failure per
+  // the "run every assert" note above - a pass is exactly as reportable as a fail (e.g.
+  // to extract-on-success), it just isn't fatal. `err instanceof Error &&
+  // err.code === 'ASSERT_FAILED'` (not `instanceof AssertionError`) because this file's
+  // AssertionError class and the one required by the checker script are different
+  // objects if this module is ever loaded twice (npm dedup edge case) - the discriminant
+  // that matters for reporting is the same `code` cli.js's exit-code check already keys
+  // off, not identity.
+  try {
+    if (check.type === 'url') {
+      const url = actingPage.url();
+      const ok = check.op === 'equals' ? url === check.value : url.includes(check.value);
+      if (!ok) {
+        throw new AssertionError(`${label}: expected URL ${check.op === 'equals' ? 'to equal' : 'to contain'} ${JSON.stringify(check.value)}, got ${JSON.stringify(url)}`);
+      }
+    } else if (check.type === 'count') {
+      // Deliberately NOT candidates.resolve() - a count check's whole point can be "expect
+      // 0 matches" (e.g. a banner is gone), and resolve() treats a zero-match candidate as
+      // a failure to fall back past rather than a valid answer. A count check therefore
+      // always reads a single selector, not a ranked/fallback list.
+      //
+      // `locator.count()` itself is still an IMMEDIATE, non-waiting query (same invariant
+      // as resolve()'s own comment above it), so a bare single read here fires the instant
+      // the previous step's click returns - before an async render triggered by that click
+      // has had a chance to land - and an `exists`/`multiple` check would then fail against
+      // a page that simply hasn't caught up yet. Poll the same selector against one shared
+      // deadline instead, same shape as resolve()'s loop, stopping the moment the check
+      // passes; a genuine `not-exists` (count already 0) is still answered on the first,
+      // fast pass with no added latency.
+      const selector = (selectors && selectors[0]) ?? '';
+      const locator = candidates.scopedLocator(scope, selector);
+      const deadline = Date.now() + Math.max(0, ctx.opts.resolveWaitMs);
+      let actual = await locator.count();
+      while (!compareCount(actual, check.op, check.count) && Date.now() < deadline) {
+        await sleep(150);
+        actual = await locator.count();
+      }
+      if (!compareCount(actual, check.op, check.count)) {
+        throw new AssertionError(`${label}: expected count ${check.op || 'eq'} ${check.count} for ${JSON.stringify(selector)}, got ${actual}`);
+      }
+    } else if (check.type === 'text-equals' || check.type === 'text-contains' || check.type === 'attribute') {
+      let locator;
+      try {
+        ({ locator } = await candidates.resolve(scope, selectors, {
+          what: label,
+          onFallback: onFallbackFor(ctx),
+          waitMs: ctx.opts.resolveWaitMs,
+        }));
+      } catch (err) {
+        // Folded into ASSERT_FAILED rather than left as SELECTOR_UNRESOLVED - an assert's
+        // own target not resolving IS the assertion failing ("expect this to be there"),
+        // not a separate "an action's target vanished" signal.
+        throw new AssertionError(`${label}: target could not be resolved (${err.message.split('\n')[0]})`);
+      }
+      if (check.type === 'attribute') {
+        const actual = await locator.first().getAttribute(check.attribute);
+        if (actual !== check.value) {
+          throw new AssertionError(`${label}: expected attribute ${JSON.stringify(check.attribute)} to be ${JSON.stringify(check.value)}, got ${JSON.stringify(actual)}`);
+        }
+      } else {
+        const text = (await locator.first().innerText()).trim();
+        const ok = check.type === 'text-equals' ? text === check.value : text.includes(check.value);
+        if (!ok) {
+          throw new AssertionError(`${label}: expected text ${check.type === 'text-equals' ? 'to equal' : 'to contain'} ${JSON.stringify(check.value)}, got ${JSON.stringify(text)}`);
+        }
       }
     } else {
-      const text = (await locator.first().innerText()).trim();
-      const ok = check.type === 'text-equals' ? text === check.value : text.includes(check.value);
-      if (!ok) {
-        throw new AssertionError(`${label}: expected text ${check.type === 'text-equals' ? 'to equal' : 'to contain'} ${JSON.stringify(check.value)}, got ${JSON.stringify(text)}`);
-      }
+      throw new Error(`unsupported assert check type ${JSON.stringify(check.type)}`);
     }
-  } else {
-    throw new Error(`unsupported assert check type ${JSON.stringify(check.type)}`);
+  } catch (err) {
+    if (err.code === 'ASSERT_FAILED') {
+      logWarn(`${ctx.path}: ${err.message}`, { event: EVENT.ASSERT_FAILED, path: ctx.path, checkType: check.type });
+      ctx.opts.onAssert?.({ path: ctx.path, passed: false, checkType: check.type, scope: scopeName, message: err.message });
+    }
+    throw err;
   }
 
   // Counted as a "step executed", same reasoning as runExtract: an assert-only flow is a
   // legitimate shape and actions === 0 is what play/verify treat as "nothing happened".
   ctx.stats.actions += 1;
   ctx.stats.steps.push({ path: ctx.path, kind: 'assert', status: 'ok' });
+  logInfo(`${ctx.path}: ${label} passed`, { event: EVENT.ASSERT_PASSED, path: ctx.path, checkType: check.type });
+  ctx.opts.onAssert?.({ path: ctx.path, passed: true, checkType: check.type, scope: scopeName, message: label });
 }
 
 async function runRepeat(step, ctx) {
@@ -799,6 +836,14 @@ async function runFlow(flow, options = {}) {
       ? createChunkedWriter(options.outputPath, options.outputFormat || 'csv', collectExtractKeys(flow.steps))
       : null,
     chunkBytesLimit: options.chunkBytesLimit ?? CHUNK_BYTES_LIMIT,
+    // Fired synchronously by runAssert for every 'assert' step, pass and fail, before
+    // a failure's AssertionError is thrown - so a library caller sees the result even
+    // for a bare page-scoped assert with no enclosing repeat/foreach to catch the throw
+    // (see test/assert-step.test.js's note on uncaught top-level step errors). Absent
+    // for every caller that doesn't pass one (every existing test, the CLI), which is
+    // exactly today's behaviour - out-of-process consumers get the same result via the
+    // ASSERT_PASSED/ASSERT_FAILED json-log lines instead, not through this callback.
+    onAssert: options.onAssert ?? null,
   };
 
   const stats = newStats();
