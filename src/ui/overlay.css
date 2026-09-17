@@ -253,10 +253,18 @@
   display: none;
 }
 
+/* Accent-parameterized exactly like .pr-btn above (--pr-accent/--pr-accent-tint,
+   set by a .pr-pill--r/--f/--a modifier) instead of every feature hardcoding its own
+   color and re-deriving hover/active/focus by hand - that duplication is what let the
+   assert panel's buttons drift out of sync with its own accent color in the first
+   place. Defaults to --f (blue) so a pill with no modifier - there shouldn't be one,
+   but CSS custom properties fail silently - still renders sanely instead of invisibly. */
 .pr-pill {
-  border: 1px solid var(--pr-accent-f);
+  --pr-accent: var(--pr-accent-f);
+  --pr-accent-tint: var(--pr-accent-f-tint);
+  border: 1px solid var(--pr-accent);
   background: transparent;
-  color: var(--pr-accent-f);
+  color: var(--pr-accent);
   border-radius: 999px;
   padding: 4px 10px;
   font: 11px/1.3 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -265,19 +273,23 @@
   transition: background-color 120ms ease, color 120ms ease, transform 120ms ease;
 }
 
+.pr-pill--r { --pr-accent: var(--pr-accent-r); --pr-accent-tint: var(--pr-accent-r-tint); }
+.pr-pill--f { --pr-accent: var(--pr-accent-f); --pr-accent-tint: var(--pr-accent-f-tint); }
+.pr-pill--a { --pr-accent: var(--pr-accent-a); --pr-accent-tint: var(--pr-accent-a-tint); }
+
 .pr-pill:hover {
-  background: rgba(0, 122, 255, .16);
+  background: var(--pr-accent-tint);
   transform: translateY(-1px);
 }
 
 .pr-pill:active {
-  background: var(--pr-accent-f);
+  background: var(--pr-accent);
   color: #fff;
   transform: translateY(0);
 }
 
 .pr-pill:focus-visible {
-  outline: 2px solid var(--pr-accent-f);
+  outline: 2px solid var(--pr-accent);
   outline-offset: 2px;
 }
 
@@ -290,6 +302,41 @@
   border-style: dashed;
 }
 
+/* Shared text-input/select style - one definition instead of the four
+   near-identical blocks (field name box, assert attribute/value boxes, assert type
+   dropdown) that used to each hand-copy border/radius/background/font/padding and
+   were exactly the kind of thing that drifts (see .pr-assert's own card-background
+   fix above, found the same way). `--pr-field-accent` defaults to the muted chrome
+   color (a plain field), overridable per-instance the same way .pr-pill's accent is. */
+.pr-field {
+  --pr-field-accent: var(--pr-chrome-muted);
+  border: 1px solid var(--pr-field-accent);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, .06);
+  color: var(--pr-chrome-fg);
+  font: 11px/1.3 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  padding: 4px 6px;
+}
+
+.pr-field[hidden] {
+  display: none;
+}
+
+.pr-field:focus-visible {
+  outline: 2px solid var(--pr-field-accent);
+  outline-offset: 1px;
+}
+
+/* The field-name box sits inline next to R/F rather than stretching to fill a
+   column like the assert panel's inputs do, so it alone needs an explicit width. */
+.pr-field--fixed {
+  width: 100px;
+}
+
+.pr-field--a {
+  --pr-field-accent: var(--pr-accent-a);
+}
+
 .pr-field-custom {
   display: flex;
   gap: 4px;
@@ -299,21 +346,6 @@
 
 .pr-field-custom[hidden] {
   display: none;
-}
-
-.pr-field-input {
-  width: 100px;
-  border: 1px solid var(--pr-chrome-muted);
-  border-radius: 4px;
-  background: rgba(255, 255, 255, .06);
-  color: var(--pr-chrome-fg);
-  font: 11px/1.3 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  padding: 4px 6px;
-}
-
-.pr-field-input:focus-visible {
-  outline: 2px solid var(--pr-accent-f);
-  outline-offset: 1px;
 }
 
 /* Assert panel (the "A" sigil). Same "[hidden] -> display:none, idle toolbar paints
@@ -338,58 +370,6 @@
 }
 
 .pr-assert[hidden] {
-  display: none;
-}
-
-.pr-assert-select {
-  border: 1px solid var(--pr-accent-a);
-  border-radius: 4px;
-  background: rgba(255, 255, 255, .06);
-  color: var(--pr-chrome-fg);
-  font: 11px/1.3 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  padding: 4px 6px;
-}
-
-.pr-assert-attr,
-.pr-assert-value {
-  border: 1px solid var(--pr-chrome-muted);
-  border-radius: 4px;
-  background: rgba(255, 255, 255, .06);
-  color: var(--pr-chrome-fg);
-  font: 11px/1.3 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  padding: 4px 6px;
-}
-
-.pr-assert-attr[hidden],
-.pr-assert-value[hidden] {
-  display: none;
-}
-
-.pr-assert-attr:focus-visible,
-.pr-assert-value:focus-visible {
-  outline: 2px solid var(--pr-accent-a);
-  outline-offset: 1px;
-}
-
-.pr-assert [data-pr="assert-pick-btn"],
-.pr-assert [data-pr="assert-capture-btn"] {
-  border-color: var(--pr-accent-a);
-  color: var(--pr-accent-a);
-}
-
-.pr-assert [data-pr="assert-pick-btn"]:hover,
-.pr-assert [data-pr="assert-capture-btn"]:hover {
-  background: var(--pr-accent-a-tint);
-}
-
-.pr-assert [data-pr="assert-pick-btn"]:active,
-.pr-assert [data-pr="assert-capture-btn"]:active {
-  background: var(--pr-accent-a);
-  color: #fff;
-}
-
-.pr-assert [data-pr="assert-pick-btn"][hidden],
-.pr-assert [data-pr="assert-capture-btn"][hidden] {
   display: none;
 }
 

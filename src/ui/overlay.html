@@ -81,7 +81,7 @@
   R/F/fState - a page-scoped assert is not tied to being inside an open F body.
 -->
 <div class="pr-assert" data-pr="assert" hidden>
-  <select class="pr-assert-select" data-pr="assert-type">
+  <select class="pr-field pr-field--a" data-pr="assert-type">
     <option value="exists">Element exists</option>
     <option value="not-exists">Element not found</option>
     <option value="multiple">Multiple elements found</option>
@@ -91,10 +91,10 @@
     <option value="url-contains">URL contains…</option>
     <option value="url-equals">URL equals…</option>
   </select>
-  <input type="text" class="pr-assert-attr" data-pr="assert-attr" placeholder="Attribute name" hidden autocomplete="off" />
-  <input type="text" class="pr-assert-value" data-pr="assert-value" placeholder="Expected value" hidden autocomplete="off" />
-  <button type="button" class="pr-pill" data-pr="assert-pick-btn" aria-label="playright:assert:pick" disabled>Pick target</button>
-  <button type="button" class="pr-pill" data-pr="assert-capture-btn" aria-label="playright:assert:pick" hidden>Capture</button>
+  <input type="text" class="pr-field" data-pr="assert-attr" placeholder="Attribute name" hidden autocomplete="off" />
+  <input type="text" class="pr-field" data-pr="assert-value" placeholder="Expected value" hidden autocomplete="off" />
+  <button type="button" class="pr-pill pr-pill--a" data-pr="assert-pick-btn" aria-label="playright:assert:pick" disabled>Pick target</button>
+  <button type="button" class="pr-pill pr-pill--a" data-pr="assert-capture-btn" aria-label="playright:assert:pick" hidden>Capture</button>
 </div>
 
 <!--
@@ -116,7 +116,7 @@
   own click would leak into the recorded flow as a stray step.
 -->
 <div class="pr-fields" data-pr="fields" hidden>
-  <button type="button" class="pr-pill pr-pill--add" data-pr="field-add-btn">+ Field</button>
+  <button type="button" class="pr-pill pr-pill--f pr-pill--add" data-pr="field-add-btn">+ Field</button>
 </div>
 
 <!--
@@ -128,6 +128,6 @@
   handler that fires the very action being recorded.
 -->
 <div class="pr-field-custom" data-pr="field-custom" hidden>
-  <input type="text" class="pr-field-input" data-pr="field-input" placeholder="Field name" autocomplete="off" />
-  <button type="button" class="pr-pill" data-pr="field-confirm-btn" disabled>Add</button>
+  <input type="text" class="pr-field pr-field--fixed" data-pr="field-input" placeholder="Field name" autocomplete="off" />
+  <button type="button" class="pr-pill pr-pill--f" data-pr="field-confirm-btn" disabled>Add</button>
 </div>

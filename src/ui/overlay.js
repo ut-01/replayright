@@ -170,6 +170,18 @@ function installOverlay(config, html, css) {
     const chromeBg = chromeVar('--pr-chrome-bg', 'rgba(17, 17, 17, .96)');
     const chromeShadow = chromeVar('--pr-chrome-shadow', '0 4px 16px rgba(0, 0, 0, .35)');
     const chromeRadius = chromeVar('--pr-chrome-radius', '8px');
+    // Same bridge, extended to the R/F/A accent colors overlay.css's .pr-btn/.pr-pill
+    // already key their look off. Before this, the level-stepper/settings panel below
+    // hand-copied their own hex for "the same" colors - close enough to pass a glance
+    // (the picker's red, the Use button's green) but not actually equal, and the focus
+    // ring was a flat-out different blue (#0a84ff here vs --pr-accent-f's #007aff) that
+    // nothing would have caught short of pixel-diffing the two surfaces. Pulling the
+    // live values means a change to one token moves both places, the same way changing
+    // --pr-chrome-bg already does for background/shadow/radius above.
+    const accentR = chromeVar('--pr-accent-r', '#ff3366');
+    const accentRTint = chromeVar('--pr-accent-r-tint', 'rgba(255, 51, 102, .12)');
+    const accentF = chromeVar('--pr-accent-f', '#007aff');
+    const accentA = chromeVar('--pr-accent-a', '#34c759');
     chromeStyle.textContent =
       '.pr-toast-layer{position:fixed;top:16px;right:16px;z-index:2147483646;'
         + 'display:flex;flex-direction:column;gap:8px;pointer-events:none;'
@@ -190,11 +202,11 @@ function installOverlay(config, html, css) {
         + 'font:12px/1.3 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;'
         + 'padding:5px 8px;border-radius:6px;white-space:nowrap;display:none;}'
       + '.pr-hover-badge{position:fixed;z-index:2147483645;pointer-events:none;'
-        + 'background:rgba(255,51,102,.92);color:#fff;'
+        + 'background:color-mix(in srgb,' + accentR + ' 92%,transparent);color:#fff;'
         + 'font:11px/1.3 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;'
         + 'font-weight:600;padding:3px 6px;border-radius:4px;white-space:nowrap;display:none;}'
       + '.pr-pick-box{position:fixed;pointer-events:none;box-sizing:border-box;display:none;'
-        + 'border:2px solid #ff3366;background:rgba(255,51,102,.1);border-radius:2px;}'
+        + 'border:2px solid ' + accentR + ';background:' + accentRTint + ';border-radius:2px;}'
       + '.pr-level-panel{position:fixed;box-sizing:border-box;max-width:min(460px,calc(100vw - 16px));'
         + 'padding:10px 12px;border-radius:' + chromeRadius + ';background:' + chromeBg + ';color:#fff;'
         + 'box-shadow:' + chromeShadow + ';pointer-events:auto;cursor:default;text-align:left;'
@@ -202,7 +214,7 @@ function installOverlay(config, html, css) {
       + '.pr-level-panel[hidden]{display:none;}'
       + '.pr-level-panel button{all:unset;box-sizing:border-box;cursor:pointer;border-radius:4px;'
         + 'font:inherit;color:#fff;}'
-      + '.pr-level-panel button:focus-visible{outline:2px solid #0a84ff;outline-offset:1px;}'
+      + '.pr-level-panel button:focus-visible{outline:2px solid ' + accentF + ';outline-offset:1px;}'
       + '.pr-level-panel button:disabled{opacity:.35;cursor:default;}'
       // `all:unset` above cancels the `[hidden]` UA rule's display:none (author
       // specificity wins over the UA stylesheet) - restore it explicitly so a hidden
@@ -213,13 +225,16 @@ function installOverlay(config, html, css) {
         + 'font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;}'
       + '.pr-level-crumb{padding:1px 5px;background:rgba(255,255,255,.08);}'
       + '.pr-level-crumb:hover{background:rgba(255,255,255,.18);}'
-      + '.pr-level-crumb.is-current{background:#ff3366;font-weight:600;}'
+      + '.pr-level-crumb.is-current{background:' + accentR + ';font-weight:600;}'
       + '.pr-level-sep{color:rgba(255,255,255,.4);}'
       + '.pr-level-actions{display:flex;align-items:center;gap:6px;}'
       + '.pr-level-actions button{padding:4px 9px;background:rgba(255,255,255,.12);}'
       + '.pr-level-actions button:not(:disabled):hover{background:rgba(255,255,255,.22);}'
-      + '.pr-level-actions .pr-level-use{background:#34c759;color:#000;font-weight:600;}'
-      + '.pr-level-actions .pr-level-use:not(:disabled):hover{background:#5ad67d;}'
+      + '.pr-level-actions .pr-level-use{background:' + accentA + ';color:#000;font-weight:600;}'
+      // Lightened from the same token via color-mix instead of a separately hand-picked
+      // hex, so the hover shade can never drift out of relation to the button's own
+      // resting color the way the flat #5ad67d literal it replaced silently could.
+      + '.pr-level-actions .pr-level-use:not(:disabled):hover{background:color-mix(in srgb,' + accentA + ' 80%,white);}'
       + '.pr-level-spacer{flex:1;}'
       + '.pr-level-info{margin-top:8px;word-break:break-word;}'
       + '.pr-level-info--good{color:#8ef0a8;}'
